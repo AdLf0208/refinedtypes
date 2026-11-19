@@ -1,0 +1,20 @@
+[package]
+# Port of Refined Types 1.21.1-0.3.2 (starforcraft/Refined-Types, MIT), Minecraft Java
+# 1.21.1 NeoForge; the port targets Horizon 26.3 at the pin in horizon-mod.toml.
+# Clean-room Rust rewrite from the mod's behaviour; local-only until publishing is
+# approved, publishable under MIT with this source.
+#
+# Cargo's name and version are not the mod's identity: horizon-mod.toml is.
+name = "refinedtypes"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Refined Types for Horizon: FE, Source and Soul storage on a Refined Storage network"
+publish = false
+
+[dependencies]
+# The pinned SDK's API crate, fetched into .horizon/sdk/ by any `cargo horizon-mod` command
+# (the launcher builds against its own copy of the same build). No second SDK crate: the
+# launcher provides no `horizon_core` extern, so compound keys go through
+# `Tag::compound` / `Tag::get(&str)` (see ports/_shared/evidence/refinedtypes-e2e/).
+horizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }

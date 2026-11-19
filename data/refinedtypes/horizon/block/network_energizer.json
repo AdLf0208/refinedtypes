@@ -1,0 +1,20 @@
+{
+  "default_state": {
+    "active": "false"
+  },
+  "item": true,
+  "properties": {
+    "explosion_resistance": 6.0,
+    "hardness": 4.5,
+    "light": 0,
+    "map_color": 11,
+    "requires_tool": true,
+    "sounds": "minecraft:stone"
+  },
+  "state_properties": {
+    "active": {
+      "type": "boolean"
+    }
+  },
+  "template": "minecraft:iron_block"
+}
