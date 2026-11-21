@@ -10,7 +10,6 @@
   ],
   "pools": [
     {
-      "bonus_rolls": 0.0,
       "condition": {
         "type": "minecraft:survives_explosion"
       },
@@ -20,7 +19,7 @@
           "type": "minecraft:item"
         }
       ],
-      "rolls": 1.0
+      "rolls": 1
     }
   ],
   "random_sequence": "refinedtypes:blocks/1024b_source_storage_block",

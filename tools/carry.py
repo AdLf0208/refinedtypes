@@ -17,13 +17,20 @@ What is carried, and from where:
     pipeline upgrades `ports/refinedstorage`'s.
   * `data/refinedtypes/horizon/{block,item}/*.json` — the template mapping the content root
     reads: one declaration per block and per item, generated from the jar's own ids.
+  * `data/refinedtypes/recipe/**` — the jar's 109 recipes, converted to the 26.3 dialect: one
+    bare id or one `#tag` per ingredient (the 1.21.1 `{"item": …}` / `{"tag": …}` object form is
+    rejected at load), no `neoforge:conditions` (an unknown load condition drops the file) and
+    no `category`. Two recipes cannot load at this pin and are skipped with the reason printed:
+    `part/64b_source_storage_part.json` names `ars_nouveau:magebloom_fiber` (Ars Nouveau is not
+    ported) and `network_energizer.json` names `refinedstorage:interface` (the parent does not
+    ship it). Every other ingredient is `minecraft:`, `refinedtypes:` or an id the parent port
+    itself declares; `--check` cross-checks that against `../refinedstorage/data/`, so a parent
+    rename fails here instead of silently dropping recipes in game.
   * `LICENSE` (the upstream MIT text) and `LICENSE-NOTICE.md` (provenance).
 
 Deliberately **not** carried, and printed by `--check` so the omission is explicit: the
-jar's `data/refinedtypes/recipe/**` and `data/refinedtypes/advancement/**`. Every recipe
-needs `refinedstorage:machine_casing` (the parent has no crafting chain), `c:dusts/redstone`
-(a NeoForge tag absent at 26.3) and `neoforge:conditions` (no such condition at 26.3); the
-advancements only unlock those recipes. Shipping them would be dead data that cannot parse.
+jar's `data/refinedtypes/advancement/**` — they only unlock recipes in the recipe book, which
+is a client-list feature with no gameplay at this pin.
 """
 from __future__ import annotations
 
@@ -42,7 +49,14 @@ UPSTREAM_LICENSE = PORT / "tools/upstream-license.txt"
 NAMESPACE = "refinedtypes"
 ASSETS = f"assets/{NAMESPACE}/"
 DATA = f"data/{NAMESPACE}/"
+RECIPE = DATA + "recipe/"
 VANILLA_TAG = "data/minecraft/tags/block/mineable/pickaxe.json"
+PARENT = PORT.parent / "refinedstorage"
+
+# The parent is a required dependency and the authority for its own ids and `c:` tags: a
+# refinedtypes recipe that names a parent item the parent does not declare cannot load, so
+# `parent_ids()` / `declared_tags()` read the parent port's data instead of a copied list.
+TAGS_USED = ("c:glass_blocks", "c:dusts/redstone", "c:silicon")
 
 # The jar's own tier spellings, in the order its enums declare them.
 TIERS = {
@@ -124,6 +138,15 @@ def upgrade_loot(raw: bytes) -> bytes:
     pools = []
     for pool in table["pools"]:
         upgraded = {key: value for key, value in pool.items() if key != "conditions"}
+        # 26.3's own block tables (all 1139 of them) carry no `bonus_rolls` and write an
+        # integral roll as `1`; the game accepts the 1.21.1 spellings, but normalising keeps
+        # the package green under `ports/tools/check_261_dialect.py` at no behaviour cost
+        # (the e2e breaks a block and asserts the drop).
+        if upgraded.pop("bonus_rolls", None) not in (None, 0, 0.0):
+            raise SystemExit(f"loot pool with a non-zero bonus_rolls: {pool}")
+        rolls = upgraded.get("rolls")
+        if isinstance(rolls, float) and rolls.is_integer():
+            upgraded["rolls"] = int(rolls)
         conditions = pool.get("conditions")
         if conditions:
             if len(conditions) != 1:
@@ -163,7 +186,9 @@ def notice(sha256: str, entries: int) -> bytes:
 `assets/refinedtypes/**` and the tag and loot-table files under `data/` are carried from the
 upstream mod's own jar, byte for byte (loot tables upgraded to the 26.3 shape by
 `tools/carry.py`); the block and item declarations under `data/refinedtypes/horizon/` are
-generated from the jar's ids. `tools/carry.py --check` re-derives every file and compares it.
+generated from the jar's ids, and `data/refinedtypes/recipe/**` is the jar's recipe family
+converted to the 26.3 dialect (bare ingredient ids, no loader conditions). `tools/carry.py
+--check` re-derives every file and compares it.
 
 | | |
 |---|---|
@@ -179,6 +204,103 @@ The mod's code is **not** carried: this port is a clean-room Rust rewrite of the
 (`notes.md` §"Upstream source analysis"). What travels is the mod's own art, models, lang and
 data, under the MIT licence above.
 """.encode()
+
+
+def parent_ids() -> set[str]:
+    """Every id the parent port declares (block items and plain items)."""
+    ids: set[str] = set()
+    for kind in ("block", "item"):
+        for path in sorted((PARENT / f"data/refinedstorage/horizon/{kind}").glob("*.json")):
+            ids.add(f"refinedstorage:{path.stem}")
+    return ids
+
+
+def declared_tags() -> set[str]:
+    """Every `c:` tag the parent (or this package) declares, as `c:path/to/tag`."""
+    tags: set[str] = set()
+    for root in (PARENT / "data/c/tags/item", PORT / "data/c/tags/item"):
+        for path in sorted(root.rglob("*.json")):
+            tags.add("c:" + path.relative_to(root).with_suffix("").as_posix())
+    return tags
+
+
+def own_ids() -> set[str]:
+    """Every item id this package declares (block items included)."""
+    return {f"{NAMESPACE}:{name}" for name in block_names() + item_names()}
+
+
+def ingredient(spec: object, where: str) -> str:
+    """One ingredient in the 26.3 shape: a bare id or `#tag`."""
+    if isinstance(spec, str):
+        return spec
+    if isinstance(spec, dict) and len(spec) == 1:
+        if "item" in spec:
+            return str(spec["item"])
+        if "tag" in spec:
+            return "#" + str(spec["tag"])
+    raise SystemExit(f"{where}: unhandled ingredient {spec!r} (only item/tag objects exist)")
+
+
+def skip_reason(spec: str, parent: set[str], tags: set[str], own: set[str]) -> str | None:
+    """Why a recipe naming SPEC cannot load at this pin, or None when it can."""
+    if spec.startswith("#"):
+        tag = spec[1:]
+        return None if tag in tags else f"tag #{tag} is declared by neither package"
+    namespace = spec.partition(":")[0]
+    if namespace in ("minecraft", NAMESPACE):
+        return None if namespace == "minecraft" or spec in own else f"{spec} is not declared here"
+    if namespace == "refinedstorage":
+        return None if spec in parent else f"{spec} is not declared by the parent port"
+    return f"{spec} is in a namespace this game does not have"
+
+
+def convert_recipe(raw: dict, name: str, parent: set[str], tags: set[str],
+                   own: set[str]) -> tuple[bytes, None] | tuple[None, str]:
+    """One jar recipe in the 26.3 dialect, or the reason it cannot be carried."""
+    kind = raw.get("type")
+    if kind not in ("minecraft:crafting_shaped", "minecraft:crafting_shapeless"):
+        raise SystemExit(f"{name}: unexpected recipe type {kind!r}")
+    if kind == "minecraft:crafting_shaped":
+        ingredients = [ingredient(value, name) for value in raw["key"].values()]
+    else:
+        ingredients = [ingredient(value, name) for value in raw["ingredients"]]
+    for spec in ingredients:
+        reason = skip_reason(spec, parent, tags, own)
+        if reason is not None:
+            return None, reason
+    result = {"id": raw["result"]["id"]}
+    if raw["result"].get("count", 1) != 1:
+        result["count"] = raw["result"]["count"]
+    out: dict[str, object] = {"type": kind, "result": result}
+    if kind == "minecraft:crafting_shaped":
+        out["pattern"] = raw["pattern"]
+        out["key"] = {key: ingredient(value, name) for key, value in raw["key"].items()}
+    else:
+        out["ingredients"] = ingredients
+    return json_bytes(out, True), None
+
+
+def recipe_files(jar: zipfile.ZipFile) -> tuple[dict[str, bytes], list[str]]:
+    """The carried recipes, and one printed line per recipe that cannot load here."""
+    parent, tags, own = parent_ids(), declared_tags(), own_ids()
+    missing = [tag for tag in TAGS_USED if tag not in tags]
+    if missing:
+        raise SystemExit(
+            f"the recipes need {missing}, which neither package declares "
+            f"(read: {PARENT}/data/c/tags/item)"
+        )
+    files: dict[str, bytes] = {}
+    skipped: list[str] = []
+    for name in sorted(jar.namelist()):
+        if not name.startswith(RECIPE) or not name.endswith(".json"):
+            continue
+        raw = json.loads(jar.read(name))
+        converted, reason = convert_recipe(raw, name, parent, tags, own)
+        if converted is None:
+            skipped.append(f"{name[len(RECIPE):]}: {reason}")
+        else:
+            files[name] = converted
+    return files, skipped
 
 
 def expected(jar: zipfile.ZipFile) -> dict[str, bytes]:
@@ -204,6 +326,9 @@ def expected(jar: zipfile.ZipFile) -> dict[str, bytes]:
         files[f"{DATA}horizon/block/{name}.json"] = block_declaration(name)
     for name in item_names():
         files[f"{DATA}horizon/item/{name}.json"] = item_declaration(name)
+    # The recipe family, converted to the 26.3 dialect.
+    recipes, _ = recipe_files(jar)
+    files.update(recipes)
     # The licence and its notice.
     files["LICENSE"] = UPSTREAM_LICENSE.read_bytes()
     sha256 = hashlib.sha256(JAR.read_bytes()).hexdigest()
@@ -227,10 +352,7 @@ def left_out(jar: zipfile.ZipFile) -> list[str]:
         for name in jar.namelist()
         if not name.endswith("/")
         and name.startswith(DATA)
-        and (
-            name.startswith(DATA + "recipe/")
-            or name.startswith(DATA + "advancement/")
-        )
+        and name.startswith(DATA + "advancement/")
     )
 
 
@@ -253,8 +375,12 @@ def check() -> int:
             if rel not in files:
                 problems.append(f"unexplained file: {rel}")
     omitted = left_out(jar)
+    recipes, skipped = recipe_files(jar)
     print(f"carry: {len(files)} files checked against {JAR.name}")
-    print(f"carry: {len(omitted)} jar files deliberately left out (recipes and their advancements)")
+    print(f"carry: {len(recipes)} recipes carried in the 26.3 dialect")
+    for line in skipped:
+        print(f"carry: skipped recipe {line}")
+    print(f"carry: {len(omitted)} jar files deliberately left out (advancement unlocks only)")
     if problems:
         for problem in problems:
             print(f"FAIL: {problem}", file=sys.stderr)
@@ -271,8 +397,12 @@ def carry() -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
     omitted = left_out(jar)
+    recipes, skipped = recipe_files(jar)
     print(f"carry: wrote {len(files)} files")
-    print(f"carry: left out {len(omitted)} jar files (recipes and their advancements; see the module doc)")
+    print(f"carry: {len(recipes)} recipes in the 26.3 dialect")
+    for line in skipped:
+        print(f"carry: skipped recipe {line}")
+    print(f"carry: left out {len(omitted)} jar files (advancement unlocks only; see the module doc)")
     return 0
 
 

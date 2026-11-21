@@ -3,8 +3,8 @@
 Ported from **Refined Types 1.21.1-0.3.2** (`refined-types-1.21.1-0.3.2.jar`, MIT, SHA-1 `ce9421742b454f0dbfc43bb99f315ac05e3d6ec0`, SHA-256 `2373c5b8f1309a43bc25bc0c8f4cfc1f3cb0b725ceafe89311aa74e3e75f7b0d`; upstream `starforcraft/Refined-Types`, branch `1.21.1`, commit
 `6a53289a4f7582dfae719c3e8bb2c33c4913373a` = the jar's own version). Minecraft Java 1.21.1
 NeoForge; the port targets Horizon **26.3** at the campaign pin
-`0b14f8acfd97fa2c750e42795249dcc981178ca4` (+ mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`),
-`api = "0.2"`.
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a` (+ mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`),
+`api = "0.2"` (built at `0b14f8a` through 0.1.1, repinned for 0.1.2).
 
 **Licence: MIT — rank 0 (permissive).** Read from the jar's `META-INF/neoforge.mods.toml`
 (`license = "MIT"`) and the upstream `LICENSE.txt` (© 2025 Starforcraft). Local-only until the
@@ -52,7 +52,7 @@ Capacities, read from `storage/{energy,soul,source}/*StorageVariant.java`:
   an `EnergyProvider` that extracts the network's energy resource (the energy disks' storage) to
   keep the network supplied, `getCapacity()` = `Long.MAX_VALUE`, `getEnergyUsage()` = 0.
 
-## The slice (this version, 0.1.0)
+## The slice (this version, 0.1.1)
 
 The mod's own purpose is "store FE / Source / Souls on a Refined Storage network". That is what
 this slice implements, on the parent port's network:
@@ -126,11 +126,12 @@ this slice implements, on the parent port's network:
 
 1. Typed grid / exporter / importer / external storage / autocrafting / storage monitor insertion
    (see deviation 1).
-2. Recipes: **not carried**. Every recipe needs `refinedstorage:machine_casing` (the parent has no
-   crafting chain — its gap 3), `c:dusts/redstone` (a NeoForge tag absent at 26.3) and
-   `neoforge:conditions` (no such loader condition at 26.3). The 111 recipes and their advancement
-   unlocks would be dead data; the items come from the creative menu until the parent's chain
-   exists.
+2. ~~Recipes: **not carried**.~~ **Done in 0.1.2** (`## Slice 2` below). The parent's chain landed
+   (`machine_casing`, the processors, `storage_housing`, `1k_storage_part`, plus the `c:` tags), so
+   107 of the jar's 109 recipes are carried and crafted in game. Two still cannot load at this pin
+   and stay blocked: `network_energizer` (needs `refinedstorage:interface`, the parent's gap 2) and
+   the source chain's root `64b_source_storage_part` (needs `ars_nouveau:magebloom_fiber`; Ars
+   Nouveau is not ported, so the source branch is reachable only with a creative-given part).
 3. The block item does not carry the block's amount (deviation 3).
 4. Menus and screens (deviation 4).
 5. The energizer does not refill its buffer from the network once drained (upstream does not
@@ -189,11 +190,11 @@ Pin **`0b14f8acfd97fa2c750e42795249dcc981178ca4`**, mixins
 | lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings |
 | format | `rustfmt --edition 2024 --check src/{lib,support,runtime}.rs` | clean (not `cargo fmt --all`: it reaches into `.horizon/sdk`) |
 | SDK gate | `cargo horizon-mod check` | exit 0 — *"Refined Types uses 257 items of the API (4 Part kinds, 1 associated item, 1 capability, 50 fields or variants, 9 hooks, 13 hook arguments, 2 macros, 87 methods, 18 traits, 72 types). Made for 0b14f8a."* |
-| package | `rm -f Cargo.lock`; `cargo horizon-mod build` twice, `cmp` | **245,100 B**, SHA-256 `b94fd6bf32bb6e0188160802ae9cb2e57b3b912daf31fd61b9aaee7e7c0b1fe2`, **474 entries**, second build byte-identical |
-| package check | `cargo horizon-mod check refinedtypes.hmod` | exit 0 — *"refinedtypes 0.1.0 (native-mod, format native-1/0b14f8a…/e59da90…, for 26.3) 245100 bytes, SHA-256 b94fd6bf…, unsigned"* |
+| package | `rm -f Cargo.lock` before each; `cargo horizon-mod build` twice, `cmp` | **245,100 B**, SHA-256 `9dcbbd3af28e7578e383858352d6f3ce3b8762470132857bd95cf2b15b264606`, **474 entries**, second build byte-identical |
+| package check | `cargo horizon-mod check refinedtypes.hmod` | exit 0 — *"refinedtypes 0.1.1 (native-mod, format native-1/0b14f8a…/e59da90…, for 26.3) 245100 bytes, SHA-256 9dcbbd3a…, unsigned"* |
 | fits | `cargo horizon-mod fits refinedtypes.hmod --build 0b14f8a` | exit 0 — *"0b14f8a made for"* |
 | content carry | `python3 tools/carry.py --check` | **468 files** re-derived and compared byte for byte; 221 jar files (the recipes and their advancements) deliberately left out; nothing unexplained |
-| in-game (modded) | `build-slot.sh run --step e2e -- tools/e2e.sh` | **PASS** + `EXIT:0` (`evidence/refinedtypes-e2e/e2e.log`) |
+| in-game (modded) | `build-slot.sh run --step e2e -- tools/e2e.sh` — the game carries the **real** `refinedstorage` 0.2.1 beside this port | **PASS** + `EXIT:0` (`evidence/refinedtypes-e2e/e2e.log`) |
 | in-game (control) | `GAME=$CONTROL_GAME tools/e2e.sh` | **FAIL** + `EXIT:1` — *"the block at 44,64,0 is minecraft:air"*, the first assertion (`…/e2e-control.log`) |
 | fail proof | `SELFTEST=1 tools/e2e.sh` | **FAIL** + `EXIT:1` — *"SELFTEST: the disk was drained to 2998, so the assertion is alive"* (`…/e2e-selftest.log`) |
 | e2e artefact gate | `python3 ports/tools/check-e2e-logs.py refinedtypes-e2e --strict` | `logs=3 ok=3 missing-exit=0 bad-exit=0`, exit 0 |
@@ -213,10 +214,15 @@ port's `src/`, so its build was reused unchanged (`native-0b14f8a-26375509d48a`,
 `librefinedtypes.so`) and the three in-game legs were re-run against it — `PASS`/`EXIT:0`,
 control `EXIT:1`, selftest `EXIT:1`, `--strict` 3/3.
 
+**0.1.1 (2026-11-19): the parent, not the fixture.** The same package, rebuilt with
+`ports/refinedstorage` 0.2.1 as the leg's other half and the fixture deleted: **245,100 B**,
+SHA-256 `9dcbbd3a…`, 474 entries, `rm -f Cargo.lock` before each of two builds, byte-identical,
+`check`/`fits` exit 0, `verify-sdk-package.py` **1/1**.
+
 ### In-game scenario (`tools/e2e.sh`)
 
-The game carries **two** packages: the parent (a fixture of `ports/refinedstorage`, see below)
-and this port. The End arena at y=63; the network at y=64:
+The game carries **two** packages, both the shipped ones: `ports/refinedstorage` 0.2.1 and this
+port. The End arena at y=63; the network at y=64:
 
 ```
 controller 40 - cable 41 - disk drive 42 - network energizer 43 - 64k energy block 44 -
@@ -256,27 +262,182 @@ storage is refused), the **offline network** (a broken controller: totals 0, dep
 the disk keeps its amount), and the **parent's drive** (the disk only becomes storage once it is
 in a slot the parent owns).
 
-### The parent package does not build at this pin (a finding, reported not fixed)
+### The parent: found broken, now fixed, and the fixture is gone (2026-11-19)
 
-`ports/refinedstorage` declares a second SDK path dependency (`horizon-core`, added for
-`JavaString`) and the launcher provides **no `horizon_core` extern**, so `native-build` fails on
-it with `error: No such file or directory (os error 2)` — measured, and reproduced on a working
-port by adding that one line (`ports/_shared/evidence/refinedtypes-e2e/launcher-externs.md`).
-This port therefore depends on `horizon-mod-api` only and reads compound keys through
-`Tag::compound`/`Tag::get(&str)`.
+When this port was built, `ports/refinedstorage` declared a second SDK path dependency
+(`horizon-core`, added for `JavaString`) and the launcher provides **no `horizon_core` extern**,
+so `native-build` failed on it with `error: No such file or directory (os error 2)` — measured,
+and reproduced on a working port by adding that one line
+(`ports/_shared/evidence/refinedtypes-e2e/launcher-externs.md`). The leg therefore ran a patched
+copy of the parent, produced by `tools/parent-fixture.py` (8 exact replacements).
 
-The in-game leg still exercises the real parent: `tools/parent-fixture.py` copies
-`ports/refinedstorage` into `ports/_shared/evidence/refinedtypes-e2e/parent/` and applies the one
-mechanical change that removes the dependency (8 exact replacements, each asserted), so the game
-runs the parent's own network, drive, container and disk code. The parent's defect is outside
-this job's write ownership; the fix is the same replacement, in the parent's next slice.
+The parent is now **0.2.1** with that dependency gone, and it installs and has its own green
+in-game leg. So:
+
+- `tools/parent-fixture.py` is **deleted**, and so is the copy it wrote
+  (`ports/_shared/evidence/refinedtypes-e2e/parent/`). `tools/build-game.sh` bundles
+  `ports/refinedstorage` **unchanged** beside this port; it still refuses a parent whose
+  `Cargo.toml` names `horizon-core`, so a regression fails with a sentence instead of a launcher
+  error.
+- The scenario was re-run against the real pair with **no change to the scenario or to any
+  assertion**, and every assertion passed for the same reason and with the same numbers: the disk
+  goes into the parent's drive (`drive: [{"count":1,"item":"refinedtypes:64k_energy_storage_disk"}]`),
+  the network reports it (`energy 0/64000` from the disk alone), the energizer drains it
+  (`4000 → 3004` in 150 ticks) and the offline/online pair reads `energy 0/0` then `2692`. **No
+  assertion needed the fixture.**
+- `launcher-externs.md` stays as the measurement that led to the parent's fix (its consequence-1
+  paragraph is history, kept because it names the exact failure a regression would show).
 
 ### Deviations from the brief's command shape
 
 - The in-game leg builds through `tools/build-game.sh`, not `ports/tools/launcher-game.sh build
   refinedtypes`: that wrapper passes one port directory, and this port cannot run without the
-  parent. The launcher accepts a folder of packages, so the script bundles two, then does what
-  the wrapper does after a build (export the version out of the managed folder).
+  parent. The launcher accepts a folder of packages, so the script bundles the two shipped
+  packages (`ports/refinedstorage` and this port), then does what the wrapper does after a build
+  (export the version out of the managed folder).
 - The e2e runs as `build-slot.sh run --job … --step e2e`, not `build-slot.sh e2e`: the `e2e`
   subcommand wraps the retired `tools/horizon.py build` ladder, which an SDK port has no
   `horizon.py` for (measured: `python3: can't open file …/tools/horizon.py`).
+
+## Slice 2 — the recipe family, every carried recipe crafted in game (2026-11-21) — version 0.1.2
+
+Gap line this slice answers — §Gaps item 2: *"Recipes: **not carried**. Every recipe needs
+`refinedstorage:machine_casing` … The 111 recipes and their advancement unlocks would be dead
+data."* The parent's slice 2 (2026-11-21, 0.2.2) landed the chain and the `c:` tags, so the first
+blocker is gone. This is the parity rule's sharpest case: a carried recipe that is never crafted
+is dead data, and until this slice the 30 blocks and 30 disks were creative-only.
+
+Pin **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`**, mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, launcher 0.2.92, game 26.3. Class `content`, tier
+**machines**, unchanged: recipes are data-tier *content*, so this slice adds a family below the
+tier and cannot exceed it. No new pin API and no third-party mod (`refinedstorage` is the
+required parent).
+
+`src/` changes in one place only: the local `Site::Block` variant is renamed `Site::Storage`
+(`src/support.rs`) because `fits --build 0b14f8a` matched the name `Block` to a surface type and
+reported *"the type `Block` can no longer be built with a literal"* — the false positive HANDOVER
+§9d item 14 records. The runtime is otherwise untouched (`runtime.rs` byte-identical in the
+package). This is a mechanical carry, so the red proofs are the carry check, the dialect check
+and the in-game leg against the previous package, not a new Rust unit test.
+
+### What was carried (from `refined-types-1.21.1-0.3.2.jar`, MIT)
+
+| family | carried |
+|---|---|
+| recipes | **107** of the jar's **109** (the inventory's earlier "111" was an estimate; the jar has 27 block + 27 disk + 54 part-dir + 1 energizer): 27 block recipes, 27 shaped disk recipes, 27 shapeless `storage_housing` disk recipes, 26 part recipes |
+| shape | 26.3 dialect: one bare id or one `#tag` per ingredient, no `neoforge:conditions`, no `category`, `count` only when != 1 — derived by `tools/carry.py`, not hand-written |
+| tags | the three the recipes name (`c:glass_blocks`, `c:dusts/redstone`, `c:silicon`) are declared by the **parent** (a required dependency); `carry.py --check` fails if it stops declaring them |
+| loot tables | the 31 carried tables normalized to 26.3's own shape (`no bonus_rolls`, integral `rolls`), proven by the in-game drop differential below |
+| not carried | `network_energizer` (`refinedstorage:interface` absent from the parent) and `part/64b_source_storage_part` (`ars_nouveau:magebloom_fiber`; namespace not ported) — both printed with the reason by `tools/carry.py`; the 112 advancement unlocks (recipe-book listing only, no gameplay) |
+
+The soul recipes carry upstream's `neoforge:mod_loaded: industrialforegoingsouls` condition
+**dropped**: 26.3 has no loader conditions (an unknown one drops the file) and the recipe's own
+ingredient is `minecraft:sculk`, which exists. The gate only told upstream's datagen "the same pack
+also has the soul mod"; this port ships soul storage without it, so the recipe is carried ungated.
+
+### Red proofs (before the fix)
+
+1. **The dialect the jar ships** — `ports/tools/check_261_dialect.py` on the jar's raw recipes:
+   `data shape: 109 offender(s) in 109 recipe/loot file(s)`, every one
+   `minecraft:crafting_shaped ingredient(s) in the 1.21.1 object form:
+   {"item": "minecraft:redstone_block"}, …` (`red-dialect-jar-recipes.log`, exit 1).
+2. **The family absent from the package** — `python3 tools/carry.py --check` before the conversion
+   wrote anything: **107** × `FAIL: missing: data/refinedtypes/recipe/…`
+   (`red-carry-check-0.1.1.log`, exit 1).
+3. **The previous package in game** — the new driver (reading the 107 new recipes) against the
+   delivered 0.1.1 + refinedstorage 0.2.1 at `0b14f8a`:
+   ```
+   FAIL: no refinedstorage:machine_casing in the inventory to place
+     1024b_source_storage_block -> None x0
+   FAIL: 1024b_source_storage_block: expected refinedtypes:1024b_source_storage_block x1, got None x0
+   ```
+   `EXIT:1` (`evidence/refinedtypes-e2e/e2e-red-recipes-0b14f8a.log`).
+
+A static shadow check compared all 80 shaped and 27 shapeless carried recipes against the 827
+shaped / 375 shapeless vanilla 26.3 recipes by resolved ingredient set: **0 candidate collisions**,
+so no carried grid is shadowed by a vanilla one (the in-game craft asserts the result id anyway).
+
+### Green — the in-game leg (one slot lease, `tools/build-game.sh` at `0a875da`)
+
+The game carries the two shipped packages (`ports/refinedstorage` 0.2.2 and this port);
+`build-game.sh` printed `Compiling refinedstorage (1 of 2)` / `Compiling refinedtypes (2 of 2)`
+(the manifest bump to 0.1.2 is what forced the second line).
+
+```
+== the crafting chain: every carried recipe crafts in game ==
+recipe PASS: 107 of 107 carried recipes craft in game with their declared output and count,
+             their ingredients are consumed, 107 wrong-ingredient controls leave the result
+             empty, the carried table is 107, and an unknown id is refused
+== a storage block drops itself with the tool its tag declares, and not without ==
+  bare hand: {"drops":{},"items_left_on_ground":0}
+  pickaxe: {"drops":{"refinedtypes:256k_energy_storage_block":1},"items_left_on_ground":1}
+…
+PASS: … all 107 carried recipes craft in game with their declared output and count (each with a
+      wrong-ingredient control), and a storage block drops itself for a pickaxe and not for a
+      bare hand
+EXIT:0
+```
+
+The driver (`tools/recipe_check.py`) reads **this package's** `data/refinedtypes/recipe/**`: a
+recipe the conversion dropped makes the count assertion fail, and a recipe the game rejected
+fails its craft. Per recipe: the result slot's **id and count**, a shift-click leaving the 3×3
+grid empty (ingredients consumed) and the crafted stack in the inventory, and a counterfactual
+with one ingredient cell replaced by a non-ingredient. The block-drop leg is the loot table's
+differential: `requires_tool` + `#minecraft:mineable/pickaxe` drops for a pickaxe and nothing for
+a bare hand.
+
+| Step | Command | Result |
+|---|---|---|
+| runtime + glue tests | `cargo test --offline` | **21 passed**, 0 failed (`evidence/refinedtypes/sdk-test.log`, sha in the header) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** (`sdk-clippy.log`) |
+| formatting | `rustfmt --edition 2024 --check src/{lib,support,runtime}.rs` | clean |
+| SDK check | `cargo horizon-mod check` | *"…257 items of the API (… 9 hooks …). Made for 0a875da."* |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` ×2 | **byte-identical** (`cmp`), **283,949 B**, SHA-256 `5360468e99254658545ba986e0ec12fde04b4ab738a997121d66d5726cfbca34`, **581 entries**, no `Cargo.lock` |
+| package check | `cargo horizon-mod check refinedtypes.hmod` | `0.1.2 (native-mod, format native-1/0a875da…/e59da90…, for 26.3) 283949 bytes` (`sdk-check.log`) |
+| fits (pin) | `… fits refinedtypes.hmod --build 0a875da` | *"0a875da made for"* (`sdk-fits.log`) |
+| fits (other build) | `… fits refinedtypes.hmod --build 0b14f8a` | *"0b14f8a fits"* (`sdk-fits-other.log`) — the one that proves something |
+| dialect gate | `python3 ports/tools/check_261_dialect.py refinedtypes.hmod` | exit 0 — `138 recipe/loot file(s), every one in the 26.3 dialect` |
+| content carry | `python3 tools/carry.py --check` | **575 files** re-derived byte for byte; 107 recipes; 2 skipped with the reason; 112 advancements left out |
+| launcher build | `tools/build-game.sh` | exit 0, `Compiling refinedtypes (2 of 2)`, `native-0a875da-15b9b9794d13` |
+| in-game leg | `build-slot.sh run --step e2e -- … tools/e2e.sh` | **PASS** + **`EXIT:0`** (`evidence/refinedtypes-e2e/e2e.log`) |
+| in-game red | the same driver against 0.1.1/0.2.1 at `0b14f8a` | **FAIL** + **`EXIT:1`** (`e2e-red-recipes-0b14f8a.log`) |
+| control (same Nightly, no packages) | `GAME=$CONTROL_GAME tools/e2e.sh` | **FAIL** + **`EXIT:1`** — *"the block at 44,64,0 is minecraft:air"* (`e2e-control.log`) |
+| selftest (flipped drain assertion) | `SELFTEST=1 tools/e2e.sh` | **FAIL** + **`EXIT:1`** — *"SELFTEST: the disk was drained to 2998"* (`e2e-selftest.log`) |
+| log gate | `check-e2e-logs.py refinedtypes-e2e --strict` | `logs=4 ok=4 missing-exit=0 bad-exit=0` |
+| package gate | `verify-sdk-package.py refinedtypes` | **1/1** |
+
+### Coverage (parity rule) — every family this port ships
+
+| family | state |
+|---|---|
+| 27 block recipes | **tested** — crafted, output id + count, ingredients consumed, counterfactual (`recipe_check.py`) |
+| 27 shaped disk recipes | **tested** — same driver |
+| 27 shapeless `storage_housing` disk recipes | **tested** — same driver (shapeless path) |
+| 26 part recipes | **tested** — same driver |
+| `network_energizer` recipe | **blocked(`refinedstorage:interface`)** — the parent does not ship the interface (its gap 2); the block itself is given in game and asserted in the network legs |
+| `64b_source_storage_part` recipe | **blocked(`ars_nouveau:magebloom_fiber`)** — Ars Nouveau is not ported; the source branch's 35 other recipes are carried and crafted from a creative-given part |
+| the three `c:` tags | **tested** — `#c:glass_blocks`, `#c:dusts/redstone`, `#c:silicon` each resolve in a crafted recipe, and a non-member in the cell yields no result |
+| 31 block loot tables | **tested** — differential: `256k_energy_storage_block` drops itself for a pickaxe (`drops: {…:1}`) and not for a bare hand (`drops: {}`) |
+| 112 advancement unlocks | **not ported** — recipe-book listing only, no gameplay at this pin (the parent skipped its own) |
+| unknown ids | **tested** — `give refinedtypes:no_such_item` refused, `setblock … refinedtypes:no_such_block` leaves air |
+| typed grid / exporters / importers / external storage / autocrafting / storage monitor | **not ported** — §Gaps item 1, unchanged (parent-API integrations a Horizon mod cannot call) |
+| block item does not carry the block's amount; menus/screens; fire resistance; cable state | **not ported** — §Gaps items 3–8, unchanged |
+
+### Deviations and traps (this slice)
+
+1. **The jar ships 109 recipes, not 111.** Counted from the jar (`recipe/blocks` 27, `recipe/disk`
+   27, `recipe/part` 54, one energizer). The earlier inventory was an estimate; the artefact wins.
+2. **Two recipes are dropped, not faked.** A recipe naming an id no package declares cannot load
+   at 26.3; carrying it would ship a file the game rejects and a player would see an uncraftable
+   item with no error. `tools/carry.py` derives the skip from the data (not from a filename list)
+   and prints the reason; the driver's count assertion makes a silent drop impossible.
+3. **The soul recipes' loader condition is dropped, not the recipe.** The condition's ingredient
+   (`minecraft:sculk`) exists at 26.3; only the `neoforge:conditions` block is unsupported.
+4. **The `Site::Block` → `Site::Storage` rename** is a false-positive fix for `fits` (HANDOVER §9d
+   item 14), not a behaviour change: 21 unit tests and every e2e assertion are unchanged.
+5. **A stop-and-go:** the first in-game attempt ran the driver with buffered stdout, so the
+   e2e-guard saw no output for 900 s and killed the leg (`EXIT:124`); the fix is `python3 -u`.
+   The second attempt lost the pickaxe to the give-then-select tick boundary (HANDOVER §9c: `ctl
+   give` lands on the next tick) — `ctl wait 4` between them, and the drop is asserted from the
+   `ctl break` reply's `drops` field rather than from the inventory, because the item can land
+   1.8 blocks away outside pickup range.

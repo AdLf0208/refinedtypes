@@ -1,0 +1,17 @@
+{
+  "key": {
+    "E": "minecraft:redstone_block",
+    "G": "#c:glass_blocks",
+    "P": "refinedtypes:64b_source_storage_part",
+    "R": "#c:dusts/redstone"
+  },
+  "pattern": [
+    "GRG",
+    "RPR",
+    "EEE"
+  ],
+  "result": {
+    "id": "refinedtypes:64b_source_storage_disk"
+  },
+  "type": "minecraft:crafting_shaped"
+}

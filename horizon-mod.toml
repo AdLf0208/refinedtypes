@@ -1,12 +1,13 @@
 id = "refinedtypes"
 name = "Refined Types"
-version = "0.1.0"
+version = "0.1.2"
 description = """An add-on for Refined Storage that stores what Refined Storage does not: FE, Source and
 Souls. Storage blocks add their tier's capacity to the network, storage disks carry their amount in
 the item and live in the network's disk drives, and the Network Energizer keeps the network supplied
-from the energy storage. Scoped to that storage: the typed grid, exporters, importers, external
-storage, autocrafting, the storage screens and the recipes are the port's gap list, not this
-version."""
+from the energy storage. The jar's recipe family is carried (107 of its 109 recipes; the two that
+need Ars Nouveau or the parent's interface are the gap), so the blocks and disks are craftable on
+the parent's own chain. Scoped to that storage: the typed grid, exporters, importers, external
+storage, autocrafting and the storage screens are the port's gap list, not this version."""
 authors = ["Starforcraft", "AdLf0208"]
 license = "MIT"
 homepage = "https://github.com/AdLf0208/refined_types"
@@ -21,5 +22,5 @@ capabilities = ["registries"]
 
 [native]
 game = "26.3"
-horizon = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
+horizon = "0a875da91dbb0fdcb7ba8c42c11341aa229af51a"
 mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"

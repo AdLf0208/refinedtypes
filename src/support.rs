@@ -191,7 +191,7 @@ fn network_at(host: &dyn Host, start: [i32; 3]) -> runtime::Network {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Site {
     /// One of the add-on's storage blocks.
-    Block([i32; 3]),
+    Storage([i32; 3]),
     /// A disk in one slot of the parent's disk drive.
     Drive { drive: [i32; 3], slot: u32 },
 }
@@ -218,7 +218,7 @@ fn holdings(host: &dyn Host, net: &runtime::Network) -> Vec<Found> {
         .map(|(pos, variant)| Found {
             variant,
             store: Store::with_stored(variant.capacity(), block_amount(host, pos)),
-            at: Site::Block(pos),
+            at: Site::Storage(pos),
         })
         .collect();
     for drive in net.drives() {
@@ -271,7 +271,7 @@ fn drive_disks(host: &dyn Host, drive: [i32; 3]) -> Vec<Found> {
 fn write_back(host: &mut dyn ServerHost, found: &Found) {
     let amount = found.store.stored();
     match found.at {
-        Site::Block(pos) => {
+        Site::Storage(pos) => {
             let Some(level) = host.level(host.dimension()) else {
                 return;
             };

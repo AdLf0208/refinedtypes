@@ -1,0 +1,10 @@
+{
+  "ingredients": [
+    "refinedstorage:storage_housing",
+    "refinedtypes:1k_soul_storage_part"
+  ],
+  "result": {
+    "id": "refinedtypes:1k_soul_storage_disk"
+  },
+  "type": "minecraft:crafting_shapeless"
+}

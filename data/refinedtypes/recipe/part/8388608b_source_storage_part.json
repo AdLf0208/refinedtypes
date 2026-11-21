@@ -1,0 +1,17 @@
+{
+  "key": {
+    "E": "minecraft:redstone_block",
+    "P": "refinedstorage:advanced_processor",
+    "R": "minecraft:netherite_block",
+    "S": "refinedtypes:1048576b_source_storage_part"
+  },
+  "pattern": [
+    "PEP",
+    "SRS",
+    "PSP"
+  ],
+  "result": {
+    "id": "refinedtypes:8388608b_source_storage_part"
+  },
+  "type": "minecraft:crafting_shaped"
+}

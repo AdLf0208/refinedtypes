@@ -1,0 +1,10 @@
+{
+  "ingredients": [
+    "refinedstorage:storage_housing",
+    "refinedtypes:65536k_energy_storage_part"
+  ],
+  "result": {
+    "id": "refinedtypes:65536k_energy_storage_disk"
+  },
+  "type": "minecraft:crafting_shapeless"
+}

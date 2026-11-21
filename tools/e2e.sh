@@ -303,4 +303,42 @@ echo "  energy after the controller came back: $KEPT (was $LEFT offline)"
 [ "$KEPT" -ge "$((LEFT - 500))" ] \
     || fail "the disk lost far more than the usage while the controller was away: $KEPT, was $LEFT"
 
-echo "PASS: the three families' blocks are on the network (energy 0/64000, soul 0/65536, usage 8 FE/t), the energizer drains its 1000 FE buffer to inactive and then runs off the network's energy storage (5000 deposited into the 64k block and drained by the usage; 4000 deposited into a disk in the parent's drive, drained and written back into the item), breaking the soul block drops the usage to 2 FE/t, a deposit with no energy storage is refused, and an offline network reports nothing while the disk keeps its amount"
+echo "== the crafting chain: every carried recipe crafts in game =="
+# Slice 2. The driver reads this package's own data/refinedtypes/recipe/** and crafts
+# every file it finds (107: the jar's 109 minus the two the pin cannot load), asserting
+# each output id and count, that the ingredients were consumed, and a wrong-ingredient
+# counterfactual per recipe. A dropped recipe fails the run, not the bookkeeping.
+python3 -u "$PORT/tools/recipe_check.py" "$SOCK" "$CTL" 36 64 8 || fail "the recipe check failed"
+
+echo "== a storage block drops itself with the tool its tag declares, and not without =="
+# The loot-table differential: requires_tool + #minecraft:mineable/pickaxe must drop the
+# block for a pickaxe and nothing for a bare hand. It also proves the carried table parses
+# (a 26.3 shape defect leaves the block empty).
+ctl command "execute in minecraft:the_end run setblock 46 64 0 refinedtypes:256k_energy_storage_block"
+ctl wait 6
+expect_state 46 64 0 'refinedtypes:256k_energy_storage_block'
+ctl command "execute in minecraft:the_end run tp @s 46.5 64 1.5"
+ctl command "gamemode survival"
+ctl command "clear @s"
+ctl wait 4
+BARE=$(ctl break 46 64 0)
+echo "  bare hand: $(echo "$BARE" | jq -c '{drops, items_left_on_ground}')"
+[ "$(echo "$BARE" | jq -r '.drops["refinedtypes:256k_energy_storage_block"] // 0')" = 0 ] \
+    || fail "a bare hand harvested the storage block: $(echo "$BARE" | jq -c '.drops')"
+ctl command "execute in minecraft:the_end run setblock 46 64 0 refinedtypes:256k_energy_storage_block"
+ctl wait 6
+ctl give minecraft:diamond_pickaxe 1
+ctl wait 4
+ctl select minecraft:diamond_pickaxe
+ctl wait 4
+WITH=$(ctl break 46 64 0)
+echo "  pickaxe: $(echo "$WITH" | jq -c '{drops, items_left_on_ground}')"
+[ "$(echo "$WITH" | jq -r '.drops["refinedtypes:256k_energy_storage_block"] // 0')" = 1 ] \
+    || fail "the storage block did not drop itself with a pickaxe: $(echo "$WITH" | jq -c '.drops')"
+ctl command "gamemode creative"
+ctl command "clear @s"
+ctl command "execute in minecraft:the_end run kill @e[type=item]"
+ctl wait 4
+
+
+echo "PASS: the three families' blocks are on the network (energy 0/64000, soul 0/65536, usage 8 FE/t), the energizer drains its 1000 FE buffer to inactive and then runs off the network's energy storage (5000 deposited into the 64k block and drained by the usage; 4000 deposited into a disk in the parent's drive, drained and written back into the item), breaking the soul block drops the usage to 2 FE/t, a deposit with no energy storage is refused, an offline network reports nothing while the disk keeps its amount, all 107 carried recipes craft in game with their declared output and count (each with a wrong-ingredient control), and a storage block drops itself for a pickaxe and not for a bare hand"

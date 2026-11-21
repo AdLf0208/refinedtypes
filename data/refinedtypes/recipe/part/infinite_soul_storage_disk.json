@@ -1,0 +1,10 @@
+{
+  "ingredients": [
+    "refinedstorage:storage_housing",
+    "refinedtypes:infinite_soul_storage_part"
+  ],
+  "result": {
+    "id": "refinedtypes:infinite_soul_storage_disk"
+  },
+  "type": "minecraft:crafting_shapeless"
+}

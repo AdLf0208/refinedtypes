@@ -12,11 +12,13 @@
 # folder, because a direct launch there is refused with exit 78 unless the launcher's Play
 # started it (ARCHITECTURE.md §8, ports/_shared/launcher-e2e.md).
 #
-# The parent half is a **fixture** (`tools/parent-fixture.py`): `ports/refinedstorage` as
-# shipped depends on `horizon-core`, which the launcher cannot provide, so its package does
-# not build at this pin. The fixture is the parent's own source with that one dependency
-# replaced by the API's `Tag::compound`/`Tag::get(&str)`; see
-# ports/_shared/evidence/refinedtypes-e2e/launcher-externs.md.
+# The parent half is **`ports/refinedstorage` itself**, unchanged: since 0.2.1 its package
+# builds under the launcher (the `horizon-core` path dependency that made `native-build` fail
+# with `error: No such file or directory (os error 2)` is gone), so the leg tests the pair a
+# player would install. Until 2026-11-19 it bundled a patched copy instead
+# (`tools/parent-fixture.py`); that fixture is gone. The script still refuses a parent whose
+# `Cargo.toml` names `horizon-core`, so a regression fails here with a sentence rather than
+# deep inside the launcher.
 #
 # Everything lives under ${HORIZON_E2E_ROOT:-~/.cache/horizon-e2e}; never /tmp.
 set -uo pipefail
@@ -26,7 +28,7 @@ ROOT=$(cd "$TOOLS/../.." && pwd)       # <campaign>/ports
 PORT=$ROOT/refinedtypes
 CAMPAIGN=$(cd "$ROOT/.." && pwd)
 
-SDK_PIN=0b14f8acfd97fa2c750e42795249dcc981178ca4
+SDK_PIN=0a875da91dbb0fdcb7ba8c42c11341aa229af51a
 MIXINS_PIN=e59da9094f0c2fdda6c627fe9eff22dec6a906f0
 PIN=${SDK_PIN:0:7}
 RES_VERSION=26.3
@@ -36,7 +38,7 @@ CONFIG=$E2E_ROOT/root/config
 HOME_DIR=$E2E_ROOT/root/home
 VERSIONS=$DATA/horizon-launcher/versions
 INSTANCE=${HORIZON_E2E_INSTANCE:-e2e}
-LAUNCHER=$ROOT/_shared/bin/launcher-0.2.78/horizon-launcher
+LAUNCHER=$ROOT/_shared/bin/launcher-0.2.92/horizon-launcher
 BUNDLE=$E2E_ROOT/$PIN/bundle-refinedtypes
 OUT=$E2E_ROOT/$PIN/refinedtypes
 CONTROL=$E2E_ROOT/$PIN/control
@@ -96,12 +98,14 @@ export_version() { # tag outdir
 bundle() {
     rm -rf "$BUNDLE"
     mkdir -p "$BUNDLE"
-    python3 "$PORT/tools/parent-fixture.py" >&2 || die "parent fixture failed" 10
-    cp -a "$ROOT/_shared/evidence/refinedtypes-e2e/parent/refinedstorage" "$BUNDLE/refinedstorage"
-    mkdir -p "$BUNDLE/refinedtypes"
-    for entry in horizon-mod.toml Cargo.toml src assets data LICENSE LICENSE-NOTICE.md; do
-        [ -e "$PORT/$entry" ] || die "the port is missing $entry" 10
-        cp -a "$PORT/$entry" "$BUNDLE/refinedtypes/"
+    grep -q "horizon-core" "$ROOT/refinedstorage/Cargo.toml" \
+        && die "the parent names horizon-core again, which the launcher cannot build (see ports/_shared/evidence/refinedtypes-e2e/launcher-externs.md)" 10
+    for mod in refinedstorage refinedtypes; do
+        mkdir -p "$BUNDLE/$mod"
+        for entry in horizon-mod.toml Cargo.toml src assets data LICENSE LICENSE-NOTICE.md; do
+            [ -e "$ROOT/$mod/$entry" ] || die "$mod is missing $entry" 10
+            cp -a "$ROOT/$mod/$entry" "$BUNDLE/$mod/"
+        done
     done
 }
 

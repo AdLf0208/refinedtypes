@@ -1,0 +1,17 @@
+{
+  "key": {
+    "E": "minecraft:redstone_block",
+    "M": "refinedstorage:machine_casing",
+    "P": "refinedtypes:1024b_source_storage_part",
+    "R": "#c:dusts/redstone"
+  },
+  "pattern": [
+    "EPE",
+    "EME",
+    "ERE"
+  ],
+  "result": {
+    "id": "refinedtypes:1024b_source_storage_block"
+  },
+  "type": "minecraft:crafting_shaped"
+}

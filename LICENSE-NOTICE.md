@@ -3,7 +3,9 @@
 `assets/refinedtypes/**` and the tag and loot-table files under `data/` are carried from the
 upstream mod's own jar, byte for byte (loot tables upgraded to the 26.3 shape by
 `tools/carry.py`); the block and item declarations under `data/refinedtypes/horizon/` are
-generated from the jar's ids. `tools/carry.py --check` re-derives every file and compares it.
+generated from the jar's ids, and `data/refinedtypes/recipe/**` is the jar's recipe family
+converted to the 26.3 dialect (bare ingredient ids, no loader conditions). `tools/carry.py
+--check` re-derives every file and compares it.
 
 | | |
 |---|---|
