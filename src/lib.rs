@@ -11,8 +11,9 @@ mod runtime;
 mod support;
 
 use mod_api::{
-    self, ComponentTypesEvent, Flow, Hooks, HostSide, RegisterCommandsEvent, Registrar,
-    RegistrationContext, RightClickBlockEvent, RunModCommandEvent, ServerHost,
+    self, BlockDropsEvent, ComponentTypesEvent, Flow, Hooks, HostSide, LevelHost,
+    RegisterCommandsEvent, Registrar, RegistrationContext, RightClickBlockEvent,
+    RunModCommandEvent, ServerHost,
 };
 
 /// The mod holds no state of its own: a block's amount is its block-entity payload, a disk's is
@@ -36,6 +37,11 @@ impl Hooks for Mod {
     /// slot; every other click is the block's own.
     fn right_click_block(&self, host: HostSide<'_>, event: &mut RightClickBlockEvent<'_>) -> Flow {
         support::on_right_click_block(host, event)
+    }
+
+    /// A broken storage block's own item carries the amount the block held.
+    fn block_drops(&self, level: &dyn LevelHost, event: &mut BlockDropsEvent<'_>) -> Flow {
+        support::on_block_drops(level, event)
     }
 
     /// `/refinedtypes info|insert`.

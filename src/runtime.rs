@@ -309,6 +309,28 @@ impl Store {
     }
 }
 
+/// What a broken storage block's own item carries from it: the amount the block held, when
+/// there is one to give back.
+///
+/// An empty finite or infinite store carries nothing (the drop is the plain block item); a
+/// creative store is always full, so its item names that. Upstream's
+/// `AbstractStorageContainerBlockItem` writes the stored amount onto the block item when the
+/// block is broken and the placement reads it back.
+pub fn carried(capacity: Capacity, stored: u64) -> Option<u64> {
+    match capacity {
+        Capacity::Creative => Some(CREATIVE_STORED),
+        _ if stored == 0 => None,
+        _ => Some(restored(capacity, stored)),
+    }
+}
+
+/// The amount a carried item may give the block it is placed as, clamped to that block's tier:
+/// a payload a player doctored to more than the tier holds gives the tier's capacity, and a
+/// creative block is full whatever the payload says.
+pub fn restored(capacity: Capacity, asked: u64) -> u64 {
+    Store::with_stored(capacity, asked).stored()
+}
+
 /// A block that is on a Refined Storage network, or the add-on's own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Node {
@@ -915,5 +937,33 @@ mod tests {
                 [0, -1, 0]
             ]
         );
+    }
+
+    #[test]
+    fn a_broken_block_carries_what_it_held_and_an_empty_one_carries_nothing() {
+        // The 256k energy block the gap line names: 5,000 in, 5,000 onto its own item.
+        let energy = Variant::new(Family::Energy, 1).unwrap();
+        assert_eq!(carried(energy.capacity(), 5_000), Some(5_000));
+        // Nothing stored is nothing to carry: the drop is the plain block item.
+        assert_eq!(carried(energy.capacity(), 0), None);
+        // An infinite store keeps what it held (it has no ceiling to clamp to).
+        let infinite = Variant::new(Family::Soul, 8).unwrap();
+        assert_eq!(carried(infinite.capacity(), 7), Some(7));
+        assert_eq!(carried(infinite.capacity(), 0), None);
+        // A creative store is always full, so its item names that, never 0.
+        assert_eq!(carried(Capacity::Creative, 0), Some(CREATIVE_STORED));
+    }
+
+    #[test]
+    fn a_carried_amount_is_clamped_to_the_tier_it_is_placed_as() {
+        // 256k = 256,000 FE: what fits comes back unchanged...
+        let energy = Variant::new(Family::Energy, 1).unwrap();
+        assert_eq!(restored(energy.capacity(), 5_000), 5_000);
+        // ...and a payload a player doctored past the tier gives the tier's capacity.
+        assert_eq!(restored(energy.capacity(), 999_999_999), 256_000);
+        assert_eq!(restored(energy.capacity(), u64::MAX), 256_000);
+        // Infinite keeps what it is asked; creative is full whatever the payload says.
+        assert_eq!(restored(Capacity::Infinite, 9_999), 9_999);
+        assert_eq!(restored(Capacity::Creative, 5_000), CREATIVE_STORED);
     }
 }

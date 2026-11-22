@@ -5,10 +5,14 @@
 //! reads the game, calls the runtime and writes the result back. The one thing it owns is
 //! the shape of the saved payloads, because that shape is the game's (`Tag`/`Compound`).
 
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
+
 use mod_api::{
-    self, BlockEntityEvent, BlockEntityPart, BlockEntityTickEvent, BlockEntityTicksEvent,
-    BlockPart, Command, CommandArgumentValue, Component, Compound, Flow, Host, HostSide,
-    HostTransaction, ItemStack, LevelSide, RegisterCommandsEvent, Registrar, RegistrationContext,
+    self, BlockDropsEvent, BlockEntityEvent, BlockEntityPart, BlockEntityTickEvent,
+    BlockEntityTicksEvent, BlockPart, Command, CommandArgumentValue, Component, Compound, Flow,
+    Host, HostSide, HostTransaction, ItemKey, ItemPart, ItemStack, LevelHost, LevelSide,
+    OnBlockPlacedByEvent, RegisterCommandsEvent, Registrar, RegistrationContext,
     RightClickBlockEvent, RunModCommandEvent, ServerHost, Tag, Text,
 };
 
@@ -20,6 +24,10 @@ use crate::runtime::{
 const BE_TYPE: &str = "refinedtypes:node";
 /// The item component that carries a storage disk's amount.
 const COMPONENT: &str = "refinedtypes:stored";
+/// The vanilla component that moves a block entity's saved data on its own item
+/// (`BlockItem.updateCustomBlockEntityTag` / `applyComponentsFromItemStack`), tagged with
+/// the block entity type's id.
+const BLOCK_ENTITY_DATA: &str = "minecraft:block_entity_data";
 /// The saved key of a storage block's amount.
 const AMOUNT_KEY: &str = "Amount";
 /// The saved keys of the energizer's state.
@@ -60,6 +68,16 @@ pub(crate) fn register(registrar: &mut dyn Registrar, _cx: &RegistrationContext)
     registrar
         .block_entity_part(&kind, NodePart)
         .expect("one Part per block-entity type");
+    // Every block's own item, for the drop hook, and — for the 30 storage blocks — the Part
+    // that gives a placed block the amount its item carried. (The energizer's buffer is not
+    // carried; its only state is its own tick's.)
+    for id in &ids {
+        let item = registrar.item_key(id);
+        remember_item(id, item);
+        if matches!(Node::from_block(id), Some(Node::Storage(_))) {
+            registrar.item_part(item, StorageItem);
+        }
+    }
 }
 
 /// The disk's component: the amount it carries.
@@ -75,13 +93,16 @@ fn save_amount(amount: u64) -> Compound {
 }
 
 /// The amount a saved payload holds, 0 when it holds none or the wrong type.
+///
+/// Any integer tag counts, as vanilla's `NbtUtils.getLong` accepts every numeric type: a
+/// payload written by hand in SNBT may name an `Int` or a `Byte`, not only our own `Long`.
 fn saved_amount(payload: &Compound) -> u64 {
-    lookup(payload, AMOUNT_KEY)
-        .and_then(|tag| match tag {
-            Tag::Long(value) => u64::try_from(*value).ok(),
-            _ => None,
-        })
-        .unwrap_or(0)
+    match lookup(payload, AMOUNT_KEY) {
+        Some(Tag::Long(value)) => u64::try_from(*value).unwrap_or(0),
+        Some(Tag::Int(value)) => u64::try_from(*value).unwrap_or(0),
+        Some(Tag::Byte(value)) => u64::try_from(*value).unwrap_or(0),
+        _ => 0,
+    }
 }
 
 /// A compound from string keys: the API's `Tag::compound` is the only route to one without
@@ -164,6 +185,152 @@ fn disk_of(id: &str) -> Option<Variant> {
     Variant::from_id(id)
         .filter(|(_, kind)| *kind == IdKind::Disk)
         .map(|(variant, _)| variant)
+}
+
+// --- the storage block's own item -----------------------------------------
+
+/// `minecraft:block_entity_data`, as a component a stack's payload is read from.
+struct BlockEntityData;
+
+impl Component for BlockEntityData {
+    type Value = Compound;
+
+    fn id(&self) -> &str {
+        BLOCK_ENTITY_DATA
+    }
+
+    fn decode(&self, value: &Tag) -> Option<Self::Value> {
+        match value {
+            Tag::Compound(data) => Some(data.clone()),
+            _ => None,
+        }
+    }
+
+    fn encode(&self, value: Self::Value) -> Tag {
+        Tag::Compound(value)
+    }
+}
+
+/// The `minecraft:block_entity_data` payload a stack carries, if it carries one.
+fn payload_of(stack: &ItemStack) -> Option<Compound> {
+    stack.get(&BlockEntityData)
+}
+
+/// The `minecraft:block_entity_data` patch a broken storage block's own item carries: the
+/// amount it held, tagged with the block entity type's id (the engine loads a payload only
+/// when its `id` names the block entity it is placed as).
+///
+/// **Only the amount.** The engine spills a container's stacks as their own item entities
+/// when the block is removed, so a payload that also carried `Items` would put every stack in
+/// the world twice (HANDOVER §9m). These blocks declare no container, and the payload is built
+/// fresh from the amount, so nothing else rides on the drop.
+fn carried_patch(amount: u64) -> Compound {
+    let payload = compound([
+        ("id", Tag::String(BE_TYPE.into())),
+        (
+            AMOUNT_KEY,
+            Tag::Long(i64::try_from(amount).unwrap_or(i64::MAX)),
+        ),
+    ]);
+    compound([(BLOCK_ENTITY_DATA, Tag::Compound(payload))])
+}
+
+/// The block items, resolved once at registration: `block_drops` runs with a read-only level
+/// host, which cannot name an item, so the drop is matched by the key remembered here.
+static ITEMS: OnceLock<RwLock<HashMap<String, ItemKey>>> = OnceLock::new();
+
+/// The block-to-item table, a poisoned lock treated as a table (a panic elsewhere must not
+/// turn every later break into a no-op).
+fn items() -> &'static RwLock<HashMap<String, ItemKey>> {
+    ITEMS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Remember the item a block's own drop resolves to (registration time).
+fn remember_item(block: &str, item: ItemKey) {
+    items()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(block.to_owned(), item);
+}
+
+/// The item key of the block `block` names, once [`remember_item`] ran.
+fn item_of(block: &str) -> Option<ItemKey> {
+    items()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(block)
+        .copied()
+}
+
+/// The item half of a storage block: a placed block takes the amount its item carried,
+/// clamped into its tier (a payload a player doctored past the tier gives the tier's
+/// capacity). The engine's own placement path cannot do this for a mod block entity —
+/// `block_entity_item::place` merges `minecraft:block_entity_data` through `canonical()`,
+/// which answers `None` for a type it does not know — so this Part is what restores it.
+pub(crate) struct StorageItem;
+
+#[mod_api::horizon_part]
+impl ItemPart for StorageItem {
+    fn on_block_placed_by(&self, host: &mut dyn ServerHost, event: &mut OnBlockPlacedByEvent<'_>) {
+        let Some(payload) = payload_of(event.stack) else {
+            return;
+        };
+        let asked = saved_amount(&payload);
+        let Some(Node::Storage(variant)) = node_at(host, event.pos) else {
+            return;
+        };
+        let wanted = runtime::restored(variant.capacity(), asked);
+        let Some(level) = host.level(host.dimension()) else {
+            return;
+        };
+        let Some(entity) = host.block_entity(level, event.pos) else {
+            return;
+        };
+        let current = entity
+            .data(host)
+            .map(|saved| saved_amount(&saved))
+            .unwrap_or(0);
+        if current == wanted {
+            return;
+        }
+        let _ = entity.merge_data(host, save_amount(wanted));
+    }
+}
+
+/// `block_drops`: a broken storage block's own item carries the amount the block held, so
+/// placing the item gives the block that amount back (upstream's
+/// `AbstractStorageContainerBlockItem`).
+///
+/// The event is built before the removal, so `level.block_entity_data` is the block entity's
+/// snapshot with the amount still in it (HANDOVER §9m), and the payload is rebuilt from the
+/// amount alone rather than copied from the snapshot.
+pub(crate) fn on_block_drops(level: &dyn LevelHost, event: &mut BlockDropsEvent<'_>) -> Flow {
+    let Some(block) = level.state_block(event.state) else {
+        return Flow::Continue;
+    };
+    let Some((variant, IdKind::Block)) = Variant::from_id(block) else {
+        return Flow::Continue;
+    };
+    let Some(entity) = event.block_entity else {
+        return Flow::Continue;
+    };
+    let amount = level
+        .block_entity_data(entity)
+        .map(|payload| saved_amount(&payload))
+        .unwrap_or(0);
+    let Some(amount) = runtime::carried(variant.capacity(), amount) else {
+        return Flow::Continue;
+    };
+    let Some(item) = item_of(block) else {
+        return Flow::Continue;
+    };
+    let patch = carried_patch(amount);
+    for drop in event.drops.iter_mut() {
+        if drop.stack.item() == item {
+            let _ = drop.stack.apply_components(&patch);
+        }
+    }
+    Flow::Continue
 }
 
 // --- reading the world -----------------------------------------------------
@@ -669,6 +836,45 @@ mod tests {
         let fresh = load_energizer(&Compound::new());
         assert_eq!(fresh.buffer(), runtime::ENERGIZER_BUFFER);
         assert!(!fresh.active());
+    }
+
+    #[test]
+    fn a_carried_payload_names_the_block_entity_type_and_the_amount_only() {
+        let patch = carried_patch(5_000);
+        // The drop carries vanilla's `minecraft:block_entity_data`, tagged with our type id.
+        let Some(Tag::Compound(payload)) = lookup(&patch, BLOCK_ENTITY_DATA) else {
+            panic!("the patch is the block entity data component: {patch:?}");
+        };
+        assert_eq!(saved_amount(payload), 5_000);
+        assert_eq!(
+            lookup(payload, "id"),
+            Some(&Tag::String(BE_TYPE.into())),
+            "the engine loads a payload only for the type its id names"
+        );
+        // The engine spills a container's stacks itself, so a payload must carry no `Items`
+        // (HANDOVER §9m): this block has none, and the fresh payload proves it.
+        assert!(lookup(payload, "Items").is_none());
+    }
+
+    #[test]
+    fn a_payloads_amount_is_read_from_any_integer_tag_a_player_may_write() {
+        assert_eq!(
+            saved_amount(&compound([("Amount", Tag::Long(5_000))])),
+            5_000
+        );
+        // A payload written by hand in SNBT may name an int or a byte; both are that amount.
+        assert_eq!(
+            saved_amount(&compound([("Amount", Tag::Int(5_000))])),
+            5_000
+        );
+        assert_eq!(saved_amount(&compound([("Amount", Tag::Byte(64))])), 64);
+        // A negative amount, a wrong type and an absent key are no amount at all.
+        assert_eq!(saved_amount(&compound([("Amount", Tag::Long(-5))])), 0);
+        assert_eq!(
+            saved_amount(&compound([("Amount", Tag::String("5".into()))])),
+            0
+        );
+        assert_eq!(saved_amount(&Compound::new()), 0);
     }
 
     #[test]

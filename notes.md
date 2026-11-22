@@ -83,6 +83,8 @@ this slice implements, on the parent port's network:
 | `block_entity` | `BlockEntityPart::block_entity` | a block's saved payload (`{Amount}`) |
 | `block_entity_ticks` | `BlockEntityPart::block_entity_ticks` | only the energizer ticks |
 | `block_entity_tick` | `BlockEntityPart::block_entity_tick` | the energizer's tick: usage, draw, `active` |
+| `block_drops` | `Hooks::block_drops` | a broken storage block's amount onto its own item (slice 3) |
+| `on_block_placed_by` | `ItemPart::on_block_placed_by` | the placed item's amount, clamped, into the block (slice 3) |
 | `right_click_block` | `Hooks::right_click_block` | a refinedtypes disk onto the parent's drive |
 | `register_commands` | `Hooks::register_commands` | `/refinedtypes info|insert` |
 | `run_mod_command` | `Hooks::run_mod_command` | their bodies |
@@ -104,10 +106,10 @@ this slice implements, on the parent port's network:
    the network's energy storage. The parent's nodes cost 0. Upstream the whole network's usage is
    charged; this port cannot charge what the parent does not model, and says so instead of
    pretending.
-3. **A storage block's amount does not survive being broken.** Upstream the block item carries it
-   (`AbstractStorageContainerBlockItem`); this slice keeps the amount in the block entity only, so
-   a broken block drops a full-capacity, empty block. `block_drops` + an `ItemPart` placement hook
-   are the missing halves; recorded as a gap rather than half-implemented.
+3. ~~**A storage block's amount does not survive being broken.**~~ **Done in 0.1.3** (`## Slice 3`):
+   the block's own item carries the amount as `minecraft:block_entity_data` and the placement Part
+   clamps it back, upstream's `AbstractStorageContainerBlockItem` contract. The Network Energizer's
+   buffer is not carried (the gap line names the storage block).
 4. **No storage-block or energizer menu/screen.** Upstream each opens a menu (the energizer shows
    an energy bar via a `NetworkEnergizerData` packet). A mod menu at this pin needs a `Screen`
    layout and a `ModContainer`, and the parent's notes record that a mod menu's slots are invisible
@@ -132,7 +134,7 @@ this slice implements, on the parent port's network:
    and stay blocked: `network_energizer` (needs `refinedstorage:interface`, the parent's gap 2) and
    the source chain's root `64b_source_storage_part` (needs `ars_nouveau:magebloom_fiber`; Ars
    Nouveau is not ported, so the source branch is reachable only with a creative-given part).
-3. The block item does not carry the block's amount (deviation 3).
+3. ~~The block item does not carry the block's amount (deviation 3).~~ **Done in 0.1.3**.
 4. Menus and screens (deviation 4).
 5. The energizer does not refill its buffer from the network once drained (upstream does not
    either: the buffer is a load-time kick-start), and the network is not shut down when unpowered
@@ -421,7 +423,8 @@ a bare hand.
 | 112 advancement unlocks | **not ported** — recipe-book listing only, no gameplay at this pin (the parent skipped its own) |
 | unknown ids | **tested** — `give refinedtypes:no_such_item` refused, `setblock … refinedtypes:no_such_block` leaves air |
 | typed grid / exporters / importers / external storage / autocrafting / storage monitor | **not ported** — §Gaps item 1, unchanged (parent-API integrations a Horizon mod cannot call) |
-| block item does not carry the block's amount; menus/screens; fire resistance; cable state | **not ported** — §Gaps items 3–8, unchanged |
+| block item carries the block's amount (slice 3) | **tested** — 5,000 in → break → the drop's `data get entity @s SelectedItem` carries `block_entity_data` with `Amount: 5000L` → place → `5000/256000`; a fresh item places `0/256000`; a doctored `999999999` clamps to `256000`; the inverted assertion is red under `NEGATIVE=1` |
+| menus/screens; fire resistance; cable state | **not ported** — §Gaps items 4–8, unchanged |
 
 ### Deviations and traps (this slice)
 
@@ -441,3 +444,131 @@ a bare hand.
    give` lands on the next tick) — `ctl wait 4` between them, and the drop is asserted from the
    `ctl break` reply's `drops` field rather than from the inventory, because the item can land
    1.8 blocks away outside pickup range.
+
+## Slice 3 — the storage block's item carries its amount (2026-11-22) — version 0.1.3
+
+Gap line this slice answers — §Gaps item 3 / deviation 3: *"A storage block's amount does not
+survive being broken. … `block_drops` + an `ItemPart` placement hook are the missing halves."*
+Class `content`, tier **machines**, unchanged: a block entity's saved amount riding on its own
+item is machines-tier state, and this adds no menu, renderer, third party or pin API. Pin
+**`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`**, mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`.
+
+### The shape (HANDOVER §9m, and the three proven ports)
+
+- `block_drops` runs **before** the removal, so `level.block_entity_data(entity)` is the pre-break
+  snapshot with `Amount` still in it. The payload is built **fresh** from the amount
+  (`{id: "refinedtypes:node", Amount}`) instead of copied from the snapshot — this block declares
+  no container, so nothing spills, but a snapshot copy could carry keys this slice never named.
+- Carrier: vanilla's `minecraft:block_entity_data`, the same component powah 0.2.7 carries a
+  machine buffer in. The payload carries no `Items` (the rule rftoolsstorage 0.2.4 and
+  functionalstorage 0.2.1 paid for).
+- `block_drops` runs with a read-only `LevelHost`, which cannot name a drop's item, so the 31
+  block→item keys are resolved once in `register` (powah's `remember_item` table).
+- Placement is `ItemPart::on_block_placed_by`: read the item's payload, clamp to the placed
+  tier and merge `{Amount}` into the block entity. This is also **the clamp**: the engine's own
+  `block_entity_item::place` merges `block_entity_data` only through `canonical()`, which answers
+  `None` for a mod type id, so the Part is the only path a mod block entity's amount comes back by.
+- The rule is pure in `runtime.rs`: `carried(capacity, stored) -> Option<u64>` (what the drop
+  names: `None` for an empty finite/infinite store, `CREATIVE_STORED` for creative) and
+  `restored(capacity, asked) -> u64` (the placement clamp).
+
+### Red → green
+
+The tests came first (verbatim from `evidence/refinedtypes/red-slice3-blockitem.log`):
+
+```
+error[E0425]: cannot find function `carried` in this scope
+   --> src/runtime.rs:919:20
+error[E0425]: cannot find function `restored` in this scope
+   --> src/runtime.rs:940:20
+error[E0425]: cannot find function `carried_patch` in this scope
+   --> src/support.rs:676:21
+error: could not compile `refinedtypes` (lib test) due to 12 previous errors
+```
+
+Then the glue; **25 tests pass** (21 + 4): `a_broken_block_carries_what_it_held_and_an_empty_one_carries_nothing`,
+`a_carried_amount_is_clamped_to_the_tier_it_is_placed_as`,
+`a_carried_payload_names_the_block_entity_type_and_the_amount_only`,
+`a_payloads_amount_is_read_from_any_integer_tag_a_player_may_write`.
+
+### In-game (one `build-slot.sh run --step e2e` lease per leg)
+
+Two one-block-deep networks with **no energizer** (nothing draws, so the read-back is exact):
+controller 50 / cable 51 / 256k block 52, and controller 54 / cable 55 / block 56. Quoted from
+`e2e.log`:
+
+```
+== slice 3: a storage block's own item carries the amount it held ==
+  block(52,64,0): refinedtypes:256k_energy_storage_block
+  info(50,64,0): … online (1 storage, 0 energizer, 1 controller, 0 drive, 0 grid); energy 0/256000; …
+  deposit: Deposited 5000 energy; the network now holds 5000/256000.
+  block saved data: {"chat":["52, 64, 0 has the following block data: 5000L"],"ok":true}
+  break: {"block":"minecraft:air","drops":{"refinedtypes:256k_energy_storage_block":1},"picked_up":{"refinedtypes:256k_energy_storage_block":1}}
+  dropped item: {"chat":["… {components: {\"minecraft:block_entity_data\": {Amount: 5000L, id: \"refinedtypes:node\"}}, count: 1, id: \"refinedtypes:256k_energy_storage_block\"}"],"ok":true}
+  placed refinedtypes:256k_energy_storage_block at 52,64,0
+  info(50,64,0): … energy 5000/256000; …
+  placed block saved data: {"chat":["52, 64, 0 has the following block data: 5000L"],"ok":true}
+  placed refinedtypes:256k_energy_storage_block at 56,64,0
+  info(54,64,0): … energy 0/256000; …                       (the differential: a fresh item)
+  doctored give: {"chat":["Gave 1 [256K Energy Storage Block] to Player21496"],"ok":true}
+  doctored item: {"chat":["… {components: {\"minecraft:block_entity_data\": {Amount: 999999999L, id: \"refinedtypes:node\"}}, count: 1, id: \"refinedtypes:256k_energy_storage_block\"}"],"ok":true}
+  placed refinedtypes:256k_energy_storage_block at 56,64,0
+  info(54,64,0): … energy 256000/256000; …                  (clamped)
+  doctored block saved data: {"chat":["56, 64, 0 has the following block data: 256000L"],"ok":true}
+```
+
+`NEGATIVE=1` inverts the restore assertion and must fail; it does —
+`FAIL: NEGATIVE: the replaced block reads 5000/256000, so the assertion is alive`
+(`e2e-negative.log`, `EXIT:1`). The whole-run counterfactuals: the control game (no packages)
+dies at the first block assertion (`e2e-control.log`, `EXIT:1`), and `SELFTEST=1` still flips the
+drain assertion (`e2e-selftest.log`, `EXIT:1`).
+
+### Traps this slice met (measured)
+
+1. **A creative placement keeps the stack.** After the differential's freshly given block was
+   placed, a plain 256k block stayed in hand; `ctl select` then found *that* one and the doctored
+   stack read as plain (first attempt failed exactly here, `EXIT:1`). `clear @s` before the
+   doctored give is what makes the leg honest.
+2. **A bare-hand break is close to `ctl`'s 30 s default** (hardness 4.5 ≈ 23 s), and on a loaded
+   box it timed out once. Both breaks now pass `--timeout 90` and report a `FAIL:` line instead of
+   dying silently under `set -e`.
+3. **The End has endermen, and a survival death loses the inventory mid-scenario** (one negative
+   run died during the bare-hand break). The survival legs now run under `resistance 4` +
+   `regeneration 4` (`undying`), which changes no drop rule the assertions read.
+4. **The recipe driver is flaky under load**, not broken: one run lost the crafting screen mid-file
+   (`no menu is open: {screen: playing}`); the same driver passed before and after, and the recipe
+   family is slice 2's, untouched here.
+
+### Ladder (0.1.3)
+
+| Step | Command | Result |
+|---|---|---|
+| runtime + glue tests | `cargo test --offline` | **25 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `rustfmt --edition 2024 --check src/{lib,support,runtime}.rs` | clean |
+| SDK check | `cargo horizon-mod check` | *"Refined Types uses 325 items of the API (4 Part kinds, 1 associated item, 2 capabilitys, 66 fields or variants, 12 hooks, 23 hook arguments, 2 macros, 109 methods, 22 traits, 84 types). Made for 0a875da."* (`sdk-check.log`) |
+| package | `rm -f Cargo.lock` before each of two `cargo horizon-mod build` runs | **288,647 B**, SHA-256 `9432dc8761476a9e266877631a02e3a55e94215259aad104ca7ddaaa4a7bd678`, **581 entries**, `cmp` byte-identical, no packed `Cargo.lock` |
+| package check | `cargo horizon-mod check refinedtypes.hmod` | `0.1.3 (native-mod, format native-1/0a875da…/e59da90…, for 26.3) 288647 bytes` (`sdk-package-check.log`) |
+| fits (pin) | `… fits refinedtypes.hmod --build 0a875da` | *"0a875da  made for"* (`sdk-fits.log`) |
+| fits (other build) | `… fits refinedtypes.hmod --build 0b14f8a` | *"0b14f8a  fits"* (`sdk-fits-other.log`) — the one that proves something |
+| content carry | `python3 tools/carry.py --check` | 575 files re-derived, 107 recipes, 2 skipped with the reason, nothing unexplained |
+| launcher build | `tools/build-game.sh` | exit 0, `Compiling refinedstorage (1 of 2)` / `Compiling refinedtypes (2 of 2)`, `native-0a875da-a0dca869a3ba` (`refinedtypes-e2e/launcher-build-0a875da.log`) |
+| in-game leg | `build-slot.sh run --step e2e -- … tools/e2e.sh` | **PASS** + **`EXIT:0`** (`refinedtypes-e2e/e2e.log`) |
+| control (same Nightly, no packages) | `GAME=$CONTROL_GAME tools/e2e.sh` | **FAIL** + `EXIT:1` — *the block at 44,64,0 is minecraft:air* (`e2e-control.log`) |
+| negative (inverted restore) | `NEGATIVE=1 tools/e2e.sh` | **FAIL** + `EXIT:1` — *the replaced block reads 5000/256000* (`e2e-negative.log`) |
+| selftest (flipped drain) | `SELFTEST=1 tools/e2e.sh` | **FAIL** + `EXIT:1` — *the disk was drained to 3004* (`e2e-selftest.log`) |
+| log gate | `check-e2e-logs.py refinedtypes-e2e --strict` | `logs=4 ok=4 missing-exit=0 bad-exit=0` |
+| package gate | `verify-sdk-package.py refinedtypes` | **1/1** |
+
+### Deviations (this slice)
+
+1. **The payload is the amount alone.** This block is not a container, so no stash and no
+   `on_destroyed_by_player` half is needed (rftoolsstorage 0.2.4's shape); HANDOVER §9m still
+   applies as "the payload carries no `Items`", which the unit test asserts.
+2. **An empty store carries nothing** — a zero amount and no payload are the same state, so an
+   empty block drops the plain item; a creative block always carries `CREATIVE_STORED`.
+3. **The energizer's buffer is still not carried** (out of this gap line); breaking it drops a
+   plain item, unchanged.
+4. **A doctored payload is clamped at placement, not refused** — vanilla's own posture for
+   `block_entity_data`; the block reads the tier's capacity.
