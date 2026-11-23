@@ -16,7 +16,11 @@ What is carried, and from where:
     `modifier`, `copy_name` becoming `copy_components` of the custom name) exactly as the
     pipeline upgrades `ports/refinedstorage`'s.
   * `data/refinedtypes/horizon/{block,item}/*.json` — the template mapping the content root
-    reads: one declaration per block and per item, generated from the jar's own ids.
+    reads: one declaration per block and per item, generated from the jar's own ids. A storage
+    disk and a storage block also declare `fireResistant()` as 26.3 spells it
+    (`minecraft:damage_resistant` over `#minecraft:is_fire`, upstream's six
+    `*StorageDiskItem`/`*StorageBlockBlockItem` constructors); a part and the energizer do not,
+    because upstream's `SimpleItem` and `NetworkNodeBlockItem` do not.
   * `data/refinedtypes/recipe/**` — the jar's 109 recipes, converted to the 26.3 dialect: one
     bare id or one `#tag` per ingredient (the 1.21.1 `{"item": …}` / `{"tag": …}` object form is
     rejected at load), no `neoforge:conditions` (an unknown load condition drops the file) and
@@ -98,6 +102,20 @@ def item_model(name: str) -> bytes:
     )
 
 
+# `Item.Properties.fireResistant()` at 26.3, in the component table's own spelling. A
+# fire-resistant item declares the `minecraft:damage_resistant` component naming the
+# `#minecraft:is_fire` damage tag — exactly what vanilla's `minecraft:netherite_ingot` entry in
+# `items.json` carries — and the engine reads it as `ItemInfo.fire_resistant`
+# (`horizon-items/src/items.rs`) and as `Items::resists_fire` for a stack, which is what keeps
+# a dropped item alive in lava. One rule, applied where upstream applies it:
+#   * `EnergyStorageDiskItem` / `SoulStorageDiskItem` / `SourceStorageDiskItem`:
+#     `new Item.Properties().stacksTo(1).fireResistant()`  -> fire resistant;
+#   * `*StorageBlockBlockItem`:                                `...stacksTo(1).fireResistant()` -> fire resistant;
+#   * `SimpleItem` (the parts) and `NetworkEnergizerBlock.createBlockItem()`
+#     (`NetworkNodeBlockItem` over `BlockConstants.PROPERTIES`): no `fireResistant()` -> plain.
+FIREPROOF = {"minecraft:damage_resistant": {"types": "#minecraft:is_fire"}}
+
+
 def block_declaration(name: str) -> bytes:
     declaration = {
         "template": "minecraft:iron_block",
@@ -122,20 +140,25 @@ def block_declaration(name: str) -> bytes:
         # `active` alone (`minecraft:barrel`, what the parent's container blocks use, would add
         # `facing` and `open` and change the blockstate the jar ships).
         declaration["template"] = "minecraft:smithing_table"
+    else:
+        # `*StorageBlockBlockItem` is the fire-resistant item of a storage block; the
+        # energizer's block item is not.
+        declaration["components"] = FIREPROOF
     return json_bytes(declaration, True)
 
 
 def item_declaration(name: str) -> bytes:
     disk = name.endswith("_storage_disk")
-    return json_bytes(
-        {
-            "template": "minecraft:paper",
-            # A storage disk is one item (`stacksTo(1)`); a part stacks.
-            "max_stack_size": 1 if disk else 64,
-            "rarity": "common",
-        },
-        True,
-    )
+    declaration = {
+        "template": "minecraft:paper",
+        # A storage disk is one item (`stacksTo(1)`); a part stacks.
+        "max_stack_size": 1 if disk else 64,
+        "rarity": "common",
+    }
+    if disk:
+        # `*StorageDiskItem`: `new Item.Properties().stacksTo(1).fireResistant()`.
+        declaration["components"] = FIREPROOF
+    return json_bytes(declaration, True)
 
 
 def menu_declaration() -> bytes:

@@ -45,9 +45,20 @@
 # reads them back, a screenshot measures the 16×70 bar, and a network with nothing but the
 # energizer's own 1,000 FE buffer is the full-bar differential.
 #
+# Slice 5 (0.1.5): a storage disk and a storage block are fire resistant, as upstream declares
+# them (`*StorageDiskItem`/`*StorageBlockBlockItem`: `...fireResistant()`). At 26.3 that is the
+# `minecraft:damage_resistant` component over `#minecraft:is_fire`, so a dropped disk or block
+# in lava survives while a part (`SimpleItem`) and a vanilla diamond are destroyed. Six items
+# are summoned above one contained lava pool and counted through `ctl entities 12 item` after
+# sixty ticks: the three families' disks and a storage block stay (`1` each), the part and the
+# diamond are gone (`0` each), and the surviving disk's own `.pos` is inside the pool.
+#
 # `GAME=$CONTROL_GAME tools/e2e.sh` runs the same scenario on the same Nightly without the
 # packages: the first assertion fails, so the leg ends `EXIT:1`.
-# `SELFTEST=1` flips the drain assertion (it must FAIL), which proves the scenario can fail.
+# `SELFTEST=1` flips the fire assertion (it must FAIL), which proves the scenario can fail.
+# `FIRE_ONLY=1` runs just the slice-5 leg (a launch plus a lava pool): the red proof against a
+# package without the declarations, and `FIRE_ONLY=1 SELFTEST=1` for its inverted assertion.
+# `DRAIN_SELFTEST=1` flips the slice-1 drain assertion (it must FAIL), which proves that one can.
 # `NEGATIVE=1` inverts the slice-3 restore assertion (it must FAIL), which proves that one can.
 # `MENU_ONLY=1` runs just the slice-4 menu leg (a launch plus a handful of blocks): the red
 # proof against a build without the container declaration, and `MENU_ONLY=1 MENU_NEGATIVE=1`
@@ -65,9 +76,11 @@ CONTROL_GAME=${CONTROL_GAME:-$CTL}
 RES=${RES:-${HORIZON_RES:-/home/adlf/Desktop/horizon/.local/horizon-client/26.3}}
 SOCK=${SOCK:-/tmp/opencode/refinedtypes-e2e.sock}
 SELFTEST=${SELFTEST:-0}
+DRAIN_SELFTEST=${DRAIN_SELFTEST:-0}
 NEGATIVE=${NEGATIVE:-0}
 MENU_NEGATIVE=${MENU_NEGATIVE:-0}
 MENU_ONLY=${MENU_ONLY:-0}
+FIRE_ONLY=${FIRE_ONLY:-0}
 KEEP=${KEEP:-0}
 WORLD=RefinedTypesE2E
 ENERGIZER=43
@@ -395,6 +408,109 @@ echo "== launch (The End arena, both packages) =="
 launch
 arena
 
+# How many dropped items of ITEM are near the player (the lava pool is a few blocks away).
+dropped() { # dropped ITEM
+    ctl entities 12 item | jq -r --arg id "$1" '[.entities[] | select(.item.item == $id)] | length'
+}
+# Summon one item entity well above the pool, so it falls into the lava as a player's drop would.
+# Each summon is proved by its own reply: `/summon` answers "Summoned new <name>" when it worked,
+# and `ctl command` answers ok:true even for a command the game refuses (the gamerule trap), so
+# the chat line — not `ok` — is the setup's assertion. (Summoned *inside* the lava an item dies
+# before anything can be asserted; from this height it falls in over a few seconds.)
+summon_item() { # summon_item ITEM X Y Z
+    local reply
+    reply=$(ctl command "summon minecraft:item $2 72.5 $3 {Item:{id:\"$1\",count:1}}")
+    case "$reply" in
+        *"Summoned new"*) ;;
+        *) fail "the setup could not summon $1: $reply" ;;
+    esac
+}
+
+fire_section() {
+    echo "== slice 5: a dropped disk and storage block survive lava, as upstream declares them =="
+    # Gap 8 (an omission the jar does not have). Upstream gives a disk and a storage block
+    # `fireResistant()` (`*StorageDiskItem`, `*StorageBlockBlockItem`) and leaves a part
+    # (`SimpleItem`) and the
+    # energizer (`NetworkNodeBlockItem` over `BlockConstants.PROPERTIES`) alone. At 26.3 the
+    # declaration is the `minecraft:damage_resistant` component naming `#minecraft:is_fire` — the
+    # spelling vanilla's own `minecraft:netherite_ingot` uses, which the engine reads as
+    # `ItemInfo.fire_resistant` — so a dropped item entity in lava takes no damage. The
+    # differential is inside the run: the same pool destroys a part and a vanilla diamond.
+    ctl command "gamemode creative @s" >/dev/null
+    ctl command "clear @s" >/dev/null
+    ctl command "execute in minecraft:the_end run kill @e[type=item]" >/dev/null
+    ctl command "execute in minecraft:the_end run tp @s 46.5 64 21.5" >/dev/null
+    ctl wait 8
+    # A contained pool: the arena floor is stone at y=63, so a 5×5 stone plate at y=64 with its
+    # middle 3×3 replaced by lava source blocks cannot flow down or sideways.
+    ctl command "execute in minecraft:the_end run fill 44 64 15 48 64 19 minecraft:stone"
+    ctl command "execute in minecraft:the_end run fill 45 64 16 47 64 18 minecraft:lava"
+    ctl wait 8
+    expect_state 46 64 17 'minecraft:lava'
+    expect_state 44 64 15 'minecraft:stone'
+    # Three families' disks, a storage block, a part and a vanilla control, each above its own
+    # cell of the pool.
+    summon_item refinedtypes:64k_energy_storage_disk 45.5 16.5
+    summon_item refinedtypes:1k_soul_storage_disk 46.5 16.5
+    summon_item refinedtypes:1024b_source_storage_disk 47.5 16.5
+    summon_item refinedtypes:64k_energy_storage_block 45.5 17.5
+    summon_item refinedtypes:64k_energy_storage_part 46.5 17.5
+    summon_item minecraft:diamond 47.5 17.5
+    ctl wait 4
+    echo "  in the world above the pool: $(ctl entities 12 item | jq -c '[.entities[] | .item.item]')"
+    # The four that are fire resistant cannot die in the air, so they are the setup's proof that
+    # the summon path worked and they are in the world; the two the pool will destroy are proved
+    # by their own summon replies above (they may already be gone by now, which is the point).
+    for item in refinedtypes:64k_energy_storage_disk refinedtypes:1k_soul_storage_disk \
+                refinedtypes:1024b_source_storage_disk refinedtypes:64k_energy_storage_block; do
+        [ "$(dropped "$item")" = 1 ] \
+            || fail "the setup did not keep $item in the world before the drop: $(ctl entities 12 item | jq -c '[.entities[] | .item.item]')"
+    done
+    # They fall the seven blocks into the lava over a couple of seconds; the two that are not
+    # fire resistant are gone a tick or two after they touch it, the four that are stay.
+    ctl wait 60
+    ENERGY_DISK=$(dropped refinedtypes:64k_energy_storage_disk)
+    SOUL_DISK=$(dropped refinedtypes:1k_soul_storage_disk)
+    SOURCE_DISK=$(dropped refinedtypes:1024b_source_storage_disk)
+    STORAGE_BLOCK=$(dropped refinedtypes:64k_energy_storage_block)
+    PART=$(dropped refinedtypes:64k_energy_storage_part)
+    DIAMOND=$(dropped minecraft:diamond)
+    echo "  after 60 ticks in lava: energy-disk=$ENERGY_DISK soul-disk=$SOUL_DISK source-disk=$SOURCE_DISK block=$STORAGE_BLOCK part=$PART diamond=$DIAMOND"
+    if [ "$SELFTEST" = 1 ]; then
+        echo "(selftest: asserting the disk was destroyed, which must fail)"
+        [ "$ENERGY_DISK" = 0 ] \
+            || fail "SELFTEST: the disk is still in the lava, so the assertion is alive"
+        echo "SELFTEST unexpectedly saw the disk destroyed"
+        exit 0
+    fi
+    [ "$ENERGY_DISK" = 1 ] || fail "a dropped 64k energy disk did not survive lava ($ENERGY_DISK alive)"
+    [ "$SOUL_DISK" = 1 ] || fail "a dropped 1k soul disk did not survive lava ($SOUL_DISK alive)"
+    [ "$SOURCE_DISK" = 1 ] || fail "a dropped 1024b source disk did not survive lava ($SOURCE_DISK alive)"
+    [ "$STORAGE_BLOCK" = 1 ] || fail "a dropped 64k storage block did not survive lava ($STORAGE_BLOCK alive)"
+    # `ctl entities` answers `.pos` (not `.position`); each survivor must lie inside the pool
+    # (x 44..48, z 15..19), or it survived somewhere that is not lava and the leg proves nothing.
+    POS=$(ctl entities 12 item |
+        jq -c '[.entities[] | select(.item.item | startswith("refinedtypes:")) | {item: .item.item, pos}]')
+    echo "  the survivors lie at $POS"
+    OUTSIDE=$(jq -r '[.[] | select(.pos[0] < 44 or .pos[0] > 48 or .pos[2] < 15 or .pos[2] > 19) | .item] | join(",")' <<<"$POS")
+    [ -z "$OUTSIDE" ] || fail "a survivor lies outside the lava pool: $OUTSIDE ($POS)"
+    # The in-mod differential: a part is the same mod's item without the declaration upstream
+    # does not give it, and it is destroyed exactly as the vanilla control is.
+    [ "$PART" = 0 ] || fail "a dropped storage part survived lava ($PART alive): upstream's SimpleItem is not fire resistant"
+    [ "$DIAMOND" = 0 ] || fail "a dropped diamond survived lava ($DIAMOND alive): the control is not a control"
+    ctl command "execute in minecraft:the_end run kill @e[type=item]" >/dev/null
+    ctl wait 4
+}
+
+# `FIRE_ONLY=1` runs just the slice-5 leg: the red proof against a package without the
+# fire-resistance declarations, and the inverted assertion (`SELFTEST=1`). It is a launch plus
+# a lava pool and six summons, so a red leg costs a minute rather than the whole scenario.
+if [ "$FIRE_ONLY" = 1 ]; then
+    fire_section
+    echo "PASS: a dropped storage disk (all three families) and a storage block survive sixty ticks in lava while a part and a vanilla diamond are destroyed"
+    exit 0
+fi
+
 # `MENU_ONLY=1` runs just the menu leg: the red proof against a build without the menu, and the
 # inverted assertion. It is a launch plus fourteen block placements, so a red leg costs a minute
 # rather than the whole scenario.
@@ -507,10 +623,10 @@ ctl wait 150
 LEFT=$(stored $ENERGIZER 64 0 energy)
 echo "  energy after 150 ticks: $LEFT"
 [ -n "$LEFT" ] || fail "the info line has no energy amount: $(info $ENERGIZER 64 0)"
-if [ "$SELFTEST" = 1 ]; then
-    echo "(selftest: asserting the disk kept all 4000, which must fail)"
-    [ "$LEFT" -eq 4000 ] || fail "SELFTEST: the disk was drained to $LEFT, so the assertion is alive"
-    echo "SELFTEST unexpectedly saw the disk undrained"
+if [ "$DRAIN_SELFTEST" = 1 ]; then
+    echo "(drain-selftest: asserting the disk kept all 4000, which must fail)"
+    [ "$LEFT" -eq 4000 ] || fail "DRAIN_SELFTEST: the disk was drained to $LEFT, so the assertion is alive"
+    echo "DRAIN_SELFTEST unexpectedly saw the disk undrained"
     exit 0
 fi
 [ "$LEFT" -lt 4000 ] || fail "the energizer did not drain the disk: $LEFT of 4000 left"
@@ -707,4 +823,6 @@ ctl wait 4
 
 menu_section
 
-echo "PASS: the three families' blocks are on the network (energy 0/64000, soul 0/65536, usage 8 FE/t), the energizer drains its 1000 FE buffer to inactive and then runs off the network's energy storage (5000 deposited into the 64k block and drained by the usage; 4000 deposited into a disk in the parent's drive, drained and written back into the item), breaking the soul block drops the usage to 2 FE/t, a deposit with no energy storage is refused, an offline network reports nothing while the disk keeps its amount, all 107 carried recipes craft in game with their declared output and count (each with a wrong-ingredient control), a storage block drops itself for a pickaxe and not for a bare hand, a broken 256k block's own item carries its 5000 energy so placing it back reads 5000/256000 (a fresh item places 0/256000 and a payload doctored to 999999999 clamps to 256000), and the Network Energizer opens the port's own menu (title 'Network Energizer', no container slot) whose eight data slots carry the network's 5000 stored energy and 256000 capacity as 16-bit limbs, with the bar drawn nearly empty for 5000/256000 and full for a buffer-only network"
+fire_section
+
+echo "PASS: the three families' blocks are on the network (energy 0/64000, soul 0/65536, usage 8 FE/t), the energizer drains its 1000 FE buffer to inactive and then runs off the network's energy storage (5000 deposited into the 64k block and drained by the usage; 4000 deposited into a disk in the parent's drive, drained and written back into the item), breaking the soul block drops the usage to 2 FE/t, a deposit with no energy storage is refused, an offline network reports nothing while the disk keeps its amount, all 107 carried recipes craft in game with their declared output and count (each with a wrong-ingredient control), a storage block drops itself for a pickaxe and not for a bare hand, a broken 256k block's own item carries its 5000 energy so placing it back reads 5000/256000 (a fresh item places 0/256000 and a payload doctored to 999999999 clamps to 256000), and the Network Energizer opens the port's own menu (title 'Network Energizer', no container slot) whose eight data slots carry the network's 5000 stored energy and 256000 capacity as 16-bit limbs, with the bar drawn nearly empty for 5000/256000 and full for a buffer-only network, and a dropped storage disk (all three families) and storage block survive sixty ticks in lava while a storage part and a vanilla diamond are destroyed"

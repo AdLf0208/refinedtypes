@@ -1,11 +1,11 @@
-# Package receipt — refinedtypes 0.1.4
+# Package receipt — refinedtypes 0.1.5
 
 | field | value |
 |---|---|
-| version | `0.1.4` |
+| version | `0.1.5` |
 | file | `refinedtypes.hmod` |
-| bytes | 295,355 |
-| sha256 | `1c2b80ea37a1e52b7681f34e6dc5e180b738e66ef42e077d4cc867f52bd189df` |
+| bytes | 299,863 |
+| sha256 | `8058cf2166ea2c9e5eef07ea90c9614830da26a68c8c698f6581a13acbf29ad3` |
 | source | this tag — the tree here is the source that produced the archive |
 | game | 26.3 |
 | horizon | `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` |

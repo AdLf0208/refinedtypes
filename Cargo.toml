@@ -6,7 +6,7 @@
 #
 # Cargo's name and version are not the mod's identity: horizon-mod.toml is.
 name = "refinedtypes"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 license = "MIT"
 description = "Refined Types for Horizon: FE, Source and Soul storage on a Refined Storage network"

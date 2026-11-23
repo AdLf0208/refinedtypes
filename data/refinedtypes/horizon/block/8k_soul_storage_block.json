@@ -1,4 +1,9 @@
 {
+  "components": {
+    "minecraft:damage_resistant": {
+      "types": "#minecraft:is_fire"
+    }
+  },
   "item": true,
   "properties": {
     "explosion_resistance": 6.0,

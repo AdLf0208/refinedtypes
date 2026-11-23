@@ -1,4 +1,9 @@
 {
+  "components": {
+    "minecraft:damage_resistant": {
+      "types": "#minecraft:is_fire"
+    }
+  },
   "max_stack_size": 1,
   "rarity": "common",
   "template": "minecraft:paper"

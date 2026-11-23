@@ -150,9 +150,16 @@ this slice implements, on the parent port's network:
    not ported), so their role is capacity, totals and usage.
 7. A storage block beside a cable does not appear in the parent's cable connection state
    (deviation 7).
-8. The disks and blocks are not `fireResistant` as upstream declares them (`Item.Properties
+8. ~~The disks and blocks are not `fireResistant` as upstream declares them (`Item.Properties
    .fireResistant()`): the declaration template does not name a component for it, and an
-   unverified component would be worse than the omission.
+   unverified component would be worse than the omission.~~ **Done in 0.1.5** (`## Slice 5`). The
+   component the omission was waiting for is at the pin under this version's own name —
+   `minecraft:damage_resistant` over `#minecraft:is_fire`, what vanilla's netherite items carry
+   and what the engine reads as `ItemInfo.fire_resistant` — and a content declaration takes it as
+   a component patch (`data/refinedtypes/horizon/item|block/*.json`), so no hook is involved and
+   the declaration is validated at load. 60 of the 88 items are fire resistant (the 30 disks and
+   the 30 storage blocks, upstream's six classes); the 27 parts and the Network Energizer are not,
+   because upstream's `SimpleItem` and `NetworkNodeBlockItem` are not.
 
 ## Upstream source analysis
 
@@ -430,7 +437,7 @@ a bare hand.
 | unknown ids | **tested** — `give refinedtypes:no_such_item` refused, `setblock … refinedtypes:no_such_block` leaves air |
 | typed grid / exporters / importers / external storage / autocrafting / storage monitor | **not ported** — §Gaps item 1, unchanged (parent-API integrations a Horizon mod cannot call) |
 | block item carries the block's amount (slice 3) | **tested** — 5,000 in → break → the drop's `data get entity @s SelectedItem` carries `block_entity_data` with `Amount: 5000L` → place → `5000/256000`; a fresh item places `0/256000`; a doctored `999999999` clamps to `256000`; the inverted assertion is red under `NEGATIVE=1` |
-| menus/screens; fire resistance; cable state | **not ported** — §Gaps items 4–8, unchanged |
+| menus/screens; fire resistance; cable state | menus/screens **done in 0.1.4**, fire resistance **done in 0.1.5** (slice 5's table); cable state remains §Gaps item 7 |
 
 ### Deviations and traps (this slice)
 
@@ -773,5 +780,170 @@ of the same amount) to within 100 FE rather than pinning 5,000 exactly.
    8-minute run was killed twice as a "hang". The leg now runs `… | tee LOG` with nothing after it.
    `tools/recipe_check.py`'s ctl calls gained a 180 s timeout for the same reason: a call the game
    never answers now names itself instead of idling the leg out.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+
+## Slice 5 — the disks and storage blocks are fire resistant (2026-11-23) — version 0.1.5
+
+Gap line this slice answers — §Gaps item 8: *"The disks and blocks are not `fireResistant` as
+upstream declares them (`Item.Properties.fireResistant()`): the declaration template does not name
+a component for it, and an unverified component would be worse than the omission."* Class
+`content`, tier **machines**, unchanged: a default component on items and blocks the package
+already declares — no block entity, menu, renderer, third-party mod or pin API — so it is a
+`data`-shaped change inside the tier, not an extension of it.
+
+### The route, measured before anything was written
+
+The brief named two things to check: whether `minecraft:fire_resistant` exists in this pin's
+component table, and whether a *content* item can carry it. Both answers came from artefacts, and
+the first one moved the slice:
+
+1. **`minecraft:fire_resistant` does not exist at 26.3.** `grep -c fire_resistant
+   <prepared 26.3>/items.json` is **0**, and the set of component types across all 1,658 vanilla
+   item entries has no such key. Vanilla's own fireproof items declare
+   **`minecraft:damage_resistant: {"types": "#minecraft:is_fire"}`** — `minecraft:netherite_ingot`
+   in `items.json` — so `Item.Properties.fireResistant()` is spelled `damage_resistant` over the
+   `#minecraft:is_fire` damage tag at this version. That is the same immunity, not a substitute:
+   `horizon-items/src/items.rs` reads `c["minecraft:damage_resistant"]["types"] ==
+   "#minecraft:is_fire"` into `ItemInfo.fire_resistant` (`:740`) and `Items::resists_fire(stack,
+   "minecraft:lava")` (`:596`) gates the item entity's lava damage on it
+   (`horizon-client/src/entities.rs:199`: `if !items.resists_fire(&self.stack, "minecraft:lava")
+   { self.health -= 4 }`). So the field the gap line was waiting for exists, under this version's
+   name; declaring it is what makes a dropped disk survive lava, and the in-game leg below proves
+   exactly that rather than asserting a name.
+2. **A content item can carry it, without the hook.** `data/<id>/horizon/item/<name>.json` and
+   `.../block/<name>.json` take a `"components"` patch over the vanilla template
+   (`horizon-mods/src/content.rs::Item::components`, "a 26.3 data component patch over the
+   template's"), and the load validates every key against the component types the vanilla table
+   actually has (`mod_content.rs::known_components`/`patch_components`, whose own test uses
+   `minecraft:damage_resistant` for a content block). A typo fails the launch, not a runtime read.
+   `Hooks::modify_default_components` exists at the pin and could set the same entry per item, but
+   the declaration is applied once by the content planner and costs **nothing per item at
+   runtime** — no listener, no per-item dispatch, no `DataLoadContext` — so the hook was not used.
+   That is the answer to the brief's "which hook and what it costs": **none; the cost is one
+   JSON patch per declaration, read once when the content loads.**
+
+### What upstream declares, and what it does not
+
+Read from the clone (`ports/_shared/upstream/refinedtypes`, commit `6a53289`), not from the name:
+
+| class | declaration | items |
+|---|---|---|
+| `storage/{energy,soul,source}/*StorageDiskItem` | `super(new Item.Properties().stacksTo(1).fireResistant(), helper)` | 30 disks |
+| `storage/{energy,soul,source}/*StorageBlockBlockItem` | `new Item.Properties().stacksTo(1).fireResistant()` | 30 block items |
+| parts (`ModInitializer` → `SimpleItem::new`) | default properties | 27 parts — **not** fire resistant |
+| `NetworkEnergizerBlock.createBlockItem()` | `new NetworkNodeBlockItem(this, HELP)` over `BlockConstants.PROPERTIES` | 1 — **not** declared |
+
+So **60 of the 88 items** get the component, and the 28 that upstream leaves plain stay plain. A
+port that marked all 88 would have shipped immunity the mod does not have — the differential in
+the leg (a part burns) is what keeps that honest.
+
+### The generator, not the tree
+
+The declarations are generated by `tools/carry.py` (`block_declaration`/`item_declaration`), so
+the rule went into the generator (`FIREPROOF`, applied to a storage disk and a storage block, not
+to a part or the energizer) and the tree was re-derived: `python3 tools/carry.py` wrote 576 files,
+`--check` re-derives every one of them byte for byte. Editing the 60 JSON files by hand would have
+been undone by the next carry — the fix belongs in the tool that produces it.
+
+### Red → green
+
+**The unit test came first** (`src/lib.rs`, `declarations::the_disks_and_storage_blocks_declare_
+fire_resistance_and_nothing_else_does`; it reads the port's own declarations, strips whitespace and
+asserts the component's exact value on 30 disks and 30 storage blocks, and its absence on 27 parts
+and the energizer). Verbatim from `evidence/refinedtypes/red-slice5-fireproof.log`:
+
+```
+thread 'declarations::the_disks_and_storage_blocks_declare_fire_resistance_and_nothing_else_does' (433608) panicked at src/lib.rs:130:13:
+1024b_source_storage_disk does not declare "minecraft:damage_resistant":{"types":"#minecraft:is_fire"} (upstream: `Item.Properties::fireResistant`)
+test result: FAILED. 29 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+
+**The previous package in game**, before the declarations existed: the new leg against the
+delivered 0.1.4 pair, `FIRE_ONLY=1 tools/e2e.sh` → **FAIL + `EXIT:1`**
+(`evidence/refinedtypes-e2e/e2e-red-fire-0.1.4.log`):
+
+```
+== slice 5: a dropped disk and storage block survive lava, as upstream declares them ==
+  block(46,64,17): minecraft:lava[level=0]
+  block(44,64,15): minecraft:stone
+  summoned: ["refinedtypes:64k_energy_storage_block","refinedtypes:64k_energy_storage_part",
+             "refinedtypes:64k_energy_storage_disk","minecraft:diamond",
+             "refinedtypes:1k_soul_storage_disk","refinedtypes:1024b_source_storage_disk"]
+  after 60 ticks in lava: energy-disk=0 soul-disk=0 source-disk=0 block=0 part=0 diamond=0
+FAIL: a dropped 64k energy disk did not survive lava (0 alive)
+EXIT:1
+```
+
+**Green**, from `e2e.log` (the delivered pair: `refinedstorage` 0.2.13 + this port):
+
+```
+  in the world above the pool: ["refinedtypes:64k_energy_storage_disk","refinedtypes:1k_soul_storage_disk","refinedtypes:1024b_source_storage_disk","refinedtypes:64k_energy_storage_block","refinedtypes:64k_energy_storage_part","minecraft:diamond"]
+  after 60 ticks in lava: energy-disk=1 soul-disk=1 source-disk=1 block=1 part=0 diamond=0
+  the survivors lie at [{"item":"refinedtypes:64k_energy_storage_block","pos":[45.5,64.688…,17.5]},{"item":"refinedtypes:1k_soul_storage_disk","pos":[46.5,64.628…,16.5]},{"item":"refinedtypes:64k_energy_storage_disk","pos":[45.5,64.602…,16.5]},{"item":"refinedtypes:1024b_source_storage_disk","pos":[47.5,64.655…,16.5]}]
+PASS: …
+EXIT:0
+```
+
+The four survivors sit **inside** the pool (y ≈ 64.6, the lava block's own height), so they
+survived the lava rather than somewhere else; the part and the diamond are gone. `SELFTEST=1`
+inverts the disk assertion and must fail — `FAIL: SELFTEST: the disk is still in the lava, so the
+assertion is alive` (`e2e-selftest.log`, `EXIT:1`).
+
+### Ladder (0.1.5)
+
+| Step | Command | Result |
+|---|---|---|
+| runtime + glue tests, red first | `cargo test --offline` before the declarations | **29 passed, 1 failed** — the new test (`red-slice5-fireproof.log`) |
+| runtime + glue tests | `cargo test --offline` | **30 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** (`sdk-clippy.log`) |
+| format | `rustfmt --edition 2024 --check src/{lib,support,runtime}.rs` | clean |
+| content carry | `python3 tools/carry.py` then `--check` | **576 files** re-derived byte for byte; 107 recipes; 2 skipped with the reason |
+| SDK check | `cargo horizon-mod check` | *"Refined Types uses 421 items of the API (…, 15 hooks, …). Made for 0a875da."* (`sdk-check.log`) |
+| package | `rm -f Cargo.lock` before each of two `cargo horizon-mod build` runs | **299,863 B**, SHA-256 `8058cf2166ea2c9e5eef07ea90c9614830da26a68c8c698f6581a13acbf29ad3`, **582 entries**, `cmp` byte-identical, no packed `Cargo.lock` |
+| package check | `cargo horizon-mod check refinedtypes.hmod` | `0.1.5 (native-mod, format native-1/0a875da…/e59da90…, for 26.3) 299863 bytes` (`sdk-package-check.log`) |
+| fits (pin) | `… fits refinedtypes.hmod --build 0a875da` | *"0a875da  made for"* (`sdk-fits.log`) |
+| fits (other build) | `… fits refinedtypes.hmod --build 0b14f8a` | *"0b14f8a  fits"* (`sdk-fits-other.log`) — the one that proves something |
+| recipe types | `python3 ports/tools/check-recipe-types.py refinedtypes` | `refinedtypes: ok` |
+| launcher build | `tools/build-game.sh` (the two shipped packages) | exit 0, `Compiling refinedstorage (1 of 2)` / `Compiling refinedtypes (2 of 2)`, `native-0a875da-2ee25a89c4b2` (`refinedtypes-e2e/launcher-build-0a875da.log`) |
+| in-game leg | `build-slot.sh run --step e2e -- … tools/e2e.sh` | **PASS** + **`EXIT:0`** (`refinedtypes-e2e/e2e.log`) |
+| in-game red | the same leg against the delivered 0.1.4 pair | **FAIL** + **`EXIT:1`** — *a dropped 64k energy disk did not survive lava* (`e2e-red-fire-0.1.4.log`) |
+| slice-5 leg alone | `FIRE_ONLY=1 tools/e2e.sh` | **PASS** + `EXIT:0` (`e2e-fire-only.log`) |
+| selftest (flipped fire assertion) | `FIRE_ONLY=1 SELFTEST=1 tools/e2e.sh` | **FAIL** + `EXIT:1` — *the disk is still in the lava* (`e2e-selftest.log`) |
+| drain selftest (flipped slice-1 drain) | `DRAIN_SELFTEST=1 tools/e2e.sh` | **FAIL** + `EXIT:1` — *the disk was drained to 2998* (`e2e-drain-selftest.log`) |
+| control (same Nightly, no packages) | `GAME=$CONTROL_GAME tools/e2e.sh` | **FAIL** + `EXIT:1` — *the block at 44,64,0 is minecraft:air* (`e2e-control.log`) |
+| negative (inverted slice-3 restore) | `NEGATIVE=1 tools/e2e.sh` | **FAIL** + `EXIT:1` — *the replaced block reads 5000/256000* (`e2e-negative.log`) |
+| menu leg alone | `MENU_ONLY=1 tools/e2e.sh` | **PASS** + `EXIT:0` (`e2e-menu-only.log`) |
+| menu negative | `MENU_ONLY=1 MENU_NEGATIVE=1 tools/e2e.sh` | **FAIL** + `EXIT:1` — *the menu reads 4924 for a 5000 network* (`e2e-menu-negative.log`) |
+| log gate | `check-e2e-logs.py refinedtypes-e2e --strict` | `logs=10 ok=10 missing-exit=0 bad-exit=0` |
+| package gate | `verify-sdk-package.py refinedtypes` | **1/1** — including *package matches the tree* |
+
+### Coverage (parity rule) — the families this slice touches
+
+| family | state |
+|---|---|
+| the 30 storage disks' fire resistance | **tested** — a dropped disk of each of the three families survives 60 ticks in a lava pool (`dropped == 1`), and its `.pos` is inside the pool (y ≈ 64.6); red against 0.1.4 (`0 alive`) and inverted under `SELFTEST=1` |
+| the 30 storage blocks' fire resistance | **tested** — a dropped `64k_energy_storage_block` survives the same pool, its `.pos` inside it |
+| the 27 parts | **tested as the in-mod differential** — a dropped `64k_energy_storage_part` is destroyed (`0 alive`), which is upstream's `SimpleItem` behaviour |
+| the Network Energizer's block item | **not declared** — upstream's `NetworkNodeBlockItem` over `BlockConstants.PROPERTIES` does not call `fireResistant()`; the port matches that, and the leg's vanilla diamond is the outside control |
+| every other family (recipes, loot, machines, menu) | unchanged from 0.1.4's rows above; all legs re-run green |
+
+### Deviations and traps (this slice)
+
+1. **The component's name moved with the version, not the semantics.** `Item.Properties
+   .fireResistant()` is `minecraft:damage_resistant` over `#minecraft:is_fire` at 26.3; the port
+   declares that, and proves the behaviour (lava) instead of asserting a key it cannot name.
+2. **The Energizer is left plain** because the jar's `createBlockItem()` does not declare it. RS's
+   `BlockConstants.PROPERTIES` is the parent's constant, not the jar's, so the port does not claim
+   a fire resistance it cannot read from the artefact.
+3. **The in-game setup had to be proved, not assumed.** `ctl command` queues a command and answers
+   `ok:true` even when the game refuses it, and each round trip costs the loaded server ~10 ticks:
+   the first full runs read the entity list *between* the fifth and sixth summon (`e2e.log`,
+   21:47) and then read it after the four fireproof items had already landed. The leg now proves
+   each summon by its own `Summoned new <name>` reply, proves the four fireproof items are in the
+   world before the drop, and only then waits and reads — so a failed setup fails the setup
+   assertion instead of passing the differential vacuously.
+4. **`SELFTEST` now flips the fire assertion** (the family this slice adds); the slice-1 drain
+   inversion is `DRAIN_SELFTEST=1` and keeps its own log. Both are recorded as fail-capable legs.
 
 Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
