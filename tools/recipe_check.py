@@ -62,11 +62,18 @@ class Ctl:
         self.binary = binary
 
     def __call__(self, *args):
-        out = subprocess.run(
-            [self.binary, "--socket", self.sock, *map(str, args)],
-            text=True,
-            capture_output=True,
-        )
+        try:
+            out = subprocess.run(
+                [self.binary, "--socket", self.sock, *map(str, args)],
+                text=True,
+                capture_output=True,
+                # A ctl call the game never answers must fail fast, not idle the leg out:
+                # the e2e guard kills a run after 900 s of silence, which reads as a hang
+                # with no suspect named (measured 2026-11-23 on a loaded box).
+                timeout=180,
+            )
+        except subprocess.TimeoutExpired:
+            raise SystemExit(f"ctl {' '.join(map(str, args))}: no reply in 180 s")
         try:
             return json.loads(out.stdout)
         except json.JSONDecodeError:

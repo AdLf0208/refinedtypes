@@ -1,3 +1,4 @@
+
 #!/usr/bin/env bash
 # In-game check for Refined Types (slice 1): FE / Soul / Source storage on a Refined
 # Storage network.
@@ -38,10 +39,21 @@
 # `energy 5000/256000` again. The differentials: a freshly given block places `0/256000`, and
 # a payload doctored to 999,999,999 places `256000/256000` (clamped).
 #
+# Slice 4 (0.1.4): the Network Energizer's menu — the mod's only menu. A 256k network takes
+# 5,000, the energizer is used, and the port's menu opens with the readout in its eight data
+# slots (the stored amount and the capacity, four 16-bit limbs each). `/refinedtypes menu`
+# reads them back, a screenshot measures the 16×70 bar, and a network with nothing but the
+# energizer's own 1,000 FE buffer is the full-bar differential.
+#
 # `GAME=$CONTROL_GAME tools/e2e.sh` runs the same scenario on the same Nightly without the
 # packages: the first assertion fails, so the leg ends `EXIT:1`.
 # `SELFTEST=1` flips the drain assertion (it must FAIL), which proves the scenario can fail.
 # `NEGATIVE=1` inverts the slice-3 restore assertion (it must FAIL), which proves that one can.
+# `MENU_ONLY=1` runs just the slice-4 menu leg (a launch plus a handful of blocks): the red
+# proof against a build without the container declaration, and `MENU_ONLY=1 MENU_NEGATIVE=1`
+# for its inverted assertion. `MENU_NEGATIVE=1` alone inverts the menu's readout assertion and
+# must FAIL. The bar is measured from a screenshot by `tools/bar_check.py` (filled and trough
+# pixels of the 16×70 gauge), so the run proves the screen is drawn, not only that it opened.
 set -euo pipefail
 export LC_ALL=C
 
@@ -54,6 +66,8 @@ RES=${RES:-${HORIZON_RES:-/home/adlf/Desktop/horizon/.local/horizon-client/26.3}
 SOCK=${SOCK:-/tmp/opencode/refinedtypes-e2e.sock}
 SELFTEST=${SELFTEST:-0}
 NEGATIVE=${NEGATIVE:-0}
+MENU_NEGATIVE=${MENU_NEGATIVE:-0}
+MENU_ONLY=${MENU_ONLY:-0}
 KEEP=${KEEP:-0}
 WORLD=RefinedTypesE2E
 ENERGIZER=43
@@ -98,6 +112,12 @@ info() { # info X Y Z
     say "refinedtypes info $1 $2 $3"
     ctl wait 4 >/dev/null
     ctl messages 6 | jq -r '.chat[]' | grep -m1 -E 'Refined Types network|No Refined Storage' || true
+}
+# The /refinedtypes menu line for a position (the menu's data slots, read back).
+menu() { # menu X Y Z
+    say "refinedtypes menu $1 $2 $3"
+    ctl wait 4 >/dev/null
+    ctl messages 6 | jq -r '.chat[]' | grep -m1 -E 'Menu at|No Refined Storage' || true
 }
 expect_info() { # expect_info X Y Z TEXT
     local line
@@ -247,9 +267,142 @@ arena() {
     ctl wait 20
 }
 
+menu_section() {
+    echo "== slice 4: the Network Energizer's menu, and the readout it carries =="
+    # Gap 4 / deviation 4. Upstream's only menu is the energizer's (`NetworkEnergizerContainerMenu`,
+    # `NetworkEnergizerScreen`, an energy bar drawn from `NetworkEnergizerEnergyInfo`); storage
+    # blocks have none. A 256k network takes 5,000, the block is used, and the port's menu opens with
+    # the readout in its data slots: the stored amount and the capacity, four 16-bit limbs each (a
+    # data slot is a `short` on the wire, so a `u64` cannot ride in one).
+    ctl command "execute in minecraft:the_end run setblock 36 64 2 refinedstorage:controller"
+    ctl command "execute in minecraft:the_end run setblock 37 64 2 refinedstorage:cable"
+    ctl command "execute in minecraft:the_end run setblock 38 64 2 refinedtypes:256k_energy_storage_block"
+    ctl command "execute in minecraft:the_end run setblock 39 64 2 refinedtypes:network_energizer"
+    ctl wait 16
+    expect_state 39 64 2 'refinedtypes:network_energizer'
+    expect_info 39 64 2 "online (1 storage, 1 energizer, 1 controller, 0 drive, 0 grid)"
+    REPLY=$(deposit 39 64 2 energy 5000)
+    echo "  deposit: $REPLY"
+    case "$REPLY" in
+        *"Deposited 5000 energy"*) ;;
+        *) fail "the 256k block on the menu network did not take the 5000: $REPLY" ;;
+    esac
+    ctl command "execute in minecraft:the_end run tp @s 39.5 64 4.5" >/dev/null
+    ctl wait 4
+    ctl interact 39 64 2
+    ctl wait 8
+    SCREEN=$(ctl screen)
+    echo "  screen: $(echo "$SCREEN" | jq -c '{screen, container, title: (.title // [] | map(.text) | join("")), slots: (.slots | length)}')"
+    [ "$(echo "$SCREEN" | jq -r '.screen')" = container ] \
+        || fail "using the energizer did not open a menu: $(echo "$SCREEN" | jq -c '{screen, container}')"
+    # The menu a mod opens itself (`PlayerRef::open_menu`) names no block position to the
+    # client, so `container` there is a sentinel: the menu type's title and the slot count are
+    # the assertion (the port's menu, the player's 36 slots and no container slot).
+    [ "$(echo "$SCREEN" | jq -r '.title // [] | map(.text) | join("")')" = "Network Energizer" ] \
+        || fail "the menu's title is not the block's: $(echo "$SCREEN" | jq -c '.title')"
+    # The one declared container slot is hidden by the port's screen, so the server's menu does not
+    # have it either: every slot the screen lists is the player's.
+    [ "$(echo "$SCREEN" | jq -r '[.slots[].slot | select(. >= 300)] | length')" = 0 ] \
+        || fail "the menu has a container slot the screen hides: $(echo "$SCREEN" | jq -c '[.slots[].slot]')"
+
+    MENU=$(menu 39 64 2)
+    echo "  menu: $MENU"
+    SLOTS=$(sed -n 's/.*data slots \[\([^]]*\)\].*/\1/p' <<<"$MENU")
+    [ -n "$SLOTS" ] || fail "/refinedtypes menu printed no data slots: $MENU"
+    read -r S0 S1 S2 S3 C0 C1 C2 C3 <<<"$(tr ',' ' ' <<<"$SLOTS")"
+    STORED_READ=$(sed -n 's/.*stored \([0-9,]*\)\/.*/\1/p' <<<"$MENU" | tr -d ,)
+    CAP_READ=$(sed -n 's/.*stored [0-9,]*\/\([0-9,]*\).*/\1/p' <<<"$MENU" | tr -d ,)
+    echo "  readout: stored=$STORED_READ capacity=$CAP_READ limbs=($S0 $S1 $S2 $S3 | $C0 $C1 $C2 $C3)"
+    # 5,000 deposited, then the network pays its usage while the menu is open (the 256k
+    # tier's 4 FE/t, `Config`'s ladder) for the ticks the reads take: the readout is the last
+    # tick's, so it trails the deposit. Two checks: it never exceeds what was deposited, and
+    # it agrees with `/refinedtypes info` — a different reading of the same amount (the
+    # block's payload against the menu's data slots) — to within a few ticks' usage.
+    [ "$STORED_READ" -le 5000 ] && [ "$STORED_READ" -ge 4000 ] \
+        || fail "the menu does not hold the deposited 5000: $STORED_READ ($MENU)"
+    LIVE=$(stored 39 64 2 energy)
+    echo "  info just after the readout: $LIVE"
+    [ -n "$LIVE" ] || fail "the info line has no energy amount: $(info 39 64 2)"
+    # The two readings are a few ticks apart by construction (two chat round-trips) while the
+    # network pays 4 FE/t, so they agree to within 100 FE (25 ticks). A slot that held the
+    # capacity instead, or a limb in the wrong place, is off by thousands.
+    [ $((LIVE - STORED_READ)) -le 100 ] && [ $((STORED_READ - LIVE)) -le 100 ] \
+        || fail "the menu reads $STORED_READ while the network reads $LIVE: the slots are not the amount"
+    [ "$S0" = "$STORED_READ" ] && [ "$S1$S2$S3" = "000" ] \
+        || fail "the stored amount is not the slots' low limb: ($S0 $S1 $S2 $S3) for $STORED_READ"
+    [ "$CAP_READ" = 256000 ] || fail "the menu's capacity is not the network's: $CAP_READ"
+    # 256,000 = 0x3E800: the low limb is 59,392 and the next one 3, exactly what the 16-bit split
+    # leaves — which a single slot could not have carried.
+    [ "$C0" = 59392 ] && [ "$C1" = 3 ] && [ "$C2" = 0 ] && [ "$C3" = 0 ] \
+        || fail "the capacity is not split into 16-bit limbs: ($C0 $C1 $C2 $C3) for $CAP_READ"
+    if [ "$MENU_NEGATIVE" = 1 ]; then
+        echo "(menu-negative: asserting the menu reads 0, which must fail)"
+        [ "$STORED_READ" = 0 ] \
+            || fail "MENU_NEGATIVE: the menu reads $STORED_READ for a 5000 network, so the assertion is alive"
+        echo "MENU_NEGATIVE unexpectedly saw an empty menu"
+        exit 0
+    fi
+    GUI=$(ctl ui | jq -r '"\(.gui_size[0]) \(.gui_size[1])"')
+    SHOT=$SCRATCH/bar-5000.png
+    ctl screenshot "$SHOT" >/dev/null || fail "no screenshot of the open menu"
+    read -r SMALL SMALL_TROUGH <<<"$(python3 "$PORT/tools/bar_check.py" "$SHOT" $GUI)" \
+        || fail "the screenshot could not be read"
+    echo "  bar at $STORED_READ/$CAP_READ: $SMALL of 70 GUI px filled, $SMALL_TROUGH dark (the trough)"
+    awk -v f="$SMALL" 'BEGIN { exit !(f <= 4) }' \
+        || fail "the bar is not nearly empty for $STORED_READ/$CAP_READ: $SMALL px"
+    # The trough is drawn even where the fill is not, so this proves the bar is on the screen
+    # at all, not that a light panel was measured.
+    awk -v d="$SMALL_TROUGH" 'BEGIN { exit !(d >= 60) }' \
+        || fail "the bar is not drawn for $STORED_READ/$CAP_READ: $SMALL_TROUGH dark px"
+    ctl close
+    ctl wait 6
+    [ "$(ctl screen | jq -r '.screen')" = playing ] \
+        || fail "closing the menu did not return to the game: $(ctl screen | jq -c '.screen')"
+
+    # The differential, in the same slot engine: a network with nothing but the energizer (its own
+    # 1000 FE buffer, no storage) reads 1000 of 1000 — a full bar. If the fraction never crossed the
+    # data slots, both networks would draw the same bar.
+    ctl command "execute in minecraft:the_end run setblock 47 64 2 refinedstorage:controller"
+    ctl command "execute in minecraft:the_end run setblock 48 64 2 refinedstorage:cable"
+    ctl command "execute in minecraft:the_end run setblock 49 64 2 refinedtypes:network_energizer"
+    ctl wait 16
+    expect_info 49 64 2 "online (0 storage, 1 energizer, 1 controller, 0 drive, 0 grid)"
+    ctl command "execute in minecraft:the_end run tp @s 49.5 64 4.5" >/dev/null
+    ctl wait 4
+    ctl interact 49 64 2
+    ctl wait 8
+    [ "$(ctl screen | jq -r '.screen')" = container ] \
+        || fail "the buffer-only energizer did not open its menu: $(ctl screen | jq -c '{screen, container}')"
+    MENU=$(menu 49 64 2)
+    echo "  menu (buffer only): $MENU"
+    case "$MENU" in
+        *"stored 1,000/1,000"*) ;;
+        *) fail "the buffer-only energizer's readout is not 1000/1000: $MENU" ;;
+    esac
+    SHOT=$SCRATCH/bar-buffer.png
+    ctl screenshot "$SHOT" >/dev/null || fail "no screenshot of the buffer-only menu"
+    read -r FULL FULL_TROUGH <<<"$(python3 "$PORT/tools/bar_check.py" "$SHOT" $GUI)" \
+        || fail "the screenshot could not be read"
+    echo "  bar at 1000/1000: $FULL of 70 GUI px filled (the 5000/256000 one was $SMALL)"
+    awk -v f="$FULL" 'BEGIN { exit !(f >= 60) }' \
+        || fail "the bar is not full for 1000/1000: $FULL px"
+    ctl close
+    ctl wait 6
+
+}
+
 echo "== launch (The End arena, both packages) =="
 launch
 arena
+
+# `MENU_ONLY=1` runs just the menu leg: the red proof against a build without the menu, and the
+# inverted assertion. It is a launch plus fourteen block placements, so a red leg costs a minute
+# rather than the whole scenario.
+if [ "$MENU_ONLY" = 1 ]; then
+    menu_section
+    echo "PASS: the Network Energizer opens the port's own menu whose data slots carry the network's stored energy and capacity, with the bar drawn from them"
+    exit 0
+fi
 
 echo "== the three families' blocks exist and the network is online =="
 ctl command "execute in minecraft:the_end run setblock 40 64 0 refinedstorage:controller"
@@ -552,4 +705,6 @@ ctl command "clear @s" >/dev/null
 ctl command "execute in minecraft:the_end run kill @e[type=item]" >/dev/null
 ctl wait 4
 
-echo "PASS: the three families' blocks are on the network (energy 0/64000, soul 0/65536, usage 8 FE/t), the energizer drains its 1000 FE buffer to inactive and then runs off the network's energy storage (5000 deposited into the 64k block and drained by the usage; 4000 deposited into a disk in the parent's drive, drained and written back into the item), breaking the soul block drops the usage to 2 FE/t, a deposit with no energy storage is refused, an offline network reports nothing while the disk keeps its amount, all 107 carried recipes craft in game with their declared output and count (each with a wrong-ingredient control), a storage block drops itself for a pickaxe and not for a bare hand, and a broken 256k block's own item carries its 5000 energy so placing it back reads 5000/256000 (a fresh item places 0/256000 and a payload doctored to 999999999 clamps to 256000)"
+menu_section
+
+echo "PASS: the three families' blocks are on the network (energy 0/64000, soul 0/65536, usage 8 FE/t), the energizer drains its 1000 FE buffer to inactive and then runs off the network's energy storage (5000 deposited into the 64k block and drained by the usage; 4000 deposited into a disk in the parent's drive, drained and written back into the item), breaking the soul block drops the usage to 2 FE/t, a deposit with no energy storage is refused, an offline network reports nothing while the disk keeps its amount, all 107 carried recipes craft in game with their declared output and count (each with a wrong-ingredient control), a storage block drops itself for a pickaxe and not for a bare hand, a broken 256k block's own item carries its 5000 energy so placing it back reads 5000/256000 (a fresh item places 0/256000 and a payload doctored to 999999999 clamps to 256000), and the Network Energizer opens the port's own menu (title 'Network Energizer', no container slot) whose eight data slots carry the network's 5000 stored energy and 256000 capacity as 16-bit limbs, with the bar drawn nearly empty for 5000/256000 and full for a buffer-only network"

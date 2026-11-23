@@ -10,10 +10,11 @@ use std::sync::{OnceLock, RwLock};
 
 use mod_api::{
     self, BlockDropsEvent, BlockEntityEvent, BlockEntityPart, BlockEntityTickEvent,
-    BlockEntityTicksEvent, BlockPart, Command, CommandArgumentValue, Component, Compound, Flow,
-    Host, HostSide, HostTransaction, ItemKey, ItemPart, ItemStack, LevelHost, LevelSide,
-    OnBlockPlacedByEvent, RegisterCommandsEvent, Registrar, RegistrationContext,
-    RightClickBlockEvent, RunModCommandEvent, ServerHost, Tag, Text,
+    BlockEntityTicksEvent, BlockPart, ClientHost, Command, CommandArgumentValue, Component,
+    Compound, Flow, Host, HostSide, HostTransaction, ItemKey, ItemPart, ItemStack, LevelHost,
+    LevelSide, ModContainer, OnBlockPlacedByEvent, RegisterCommandsEvent, Registrar,
+    RegistrationContext, RightClickBlockEvent, RunModCommandEvent, Screen, ScreenDrawEvent,
+    ScreenEvent, ScreenTooltipEvent, ServerHost, Tag, Text,
 };
 
 use crate::runtime::{
@@ -56,6 +57,12 @@ fn block_ids() -> Vec<String> {
 
 /// The energizer's block id (it is not a storage tier).
 const ENERGIZER_BLOCK: &str = "refinedtypes:network_energizer";
+/// The menu type the energizer's container opens (`data/refinedtypes/horizon/menu/energizer.json`).
+const ENERGIZER_MENU: &str = "refinedtypes:energizer";
+/// Where upstream's `NetworkEnergizerScreen` puts its energy bar, in GUI pixels from the
+/// screen's top left (`new EnergyProgressWidget(leftPos + 80, topPos + 20, 16, 70, …)`).
+const BAR_AT: [f32; 2] = [80.0, 20.0];
+const BAR_SIZE: [f32; 2] = [16.0, 70.0];
 
 /// Declare the block-entity type and attach the Part to it.
 pub(crate) fn register(registrar: &mut dyn Registrar, _cx: &RegistrationContext) {
@@ -78,6 +85,34 @@ pub(crate) fn register(registrar: &mut dyn Registrar, _cx: &RegistrationContext)
             registrar.item_part(item, StorageItem);
         }
     }
+    // The energizer's menu: the mod's only menu (upstream's
+    // `NetworkEnergizerContainerMenu`, declared in `Menus`), which the engine opens when the
+    // block is used. Upstream has no item slots in it — only the energy readout and the
+    // player's inventory — but a menu type at this pin declares at least one container slot,
+    // so it declares one and the screen hides it (`Screen::slots`), which also keeps it out
+    // of the server's menu (`native_hidden_slots`).
+    let energizer = registrar.block_key(ENERGIZER_BLOCK);
+    #[expect(
+        clippy::needless_update,
+        reason = "the update is for a field a later game build may add"
+    )]
+    let container = ModContainer {
+        slots: 1,
+        // No hopper reaches an energizer: it holds nothing.
+        faces: [
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ],
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        menu: Some(ENERGIZER_MENU.to_owned()),
+        ..ModContainer::default()
+    };
+    registrar.block_container(&energizer, container);
 }
 
 /// The disk's component: the amount it carries.
@@ -465,6 +500,31 @@ fn write_back(host: &mut dyn ServerHost, found: &Found) {
 
 // --- the Part: the 31 blocks ----------------------------------------------
 
+/// The colour of the menu bar's fill, `0xAARRGGBB`: the green of upstream's
+/// `textures/gui/sprites/widget/energy_progress_bar.png`, which the content carries.
+const ENERGY_COLOR: u32 = 0xFF5AD35A;
+
+/// The energizer menu's data slots for the state a tick left: the network's stored energy
+/// and the capacity it is measured against.
+///
+/// Upstream's `NetworkEnergizerBlockEntity.getStored` falls back to the node's own buffer
+/// when the network holds nothing, so this does too; the capacity is the network's real one
+/// (upstream passes the stored amount as the capacity, which makes the bar always full —
+/// `getCapacity`'s own comment says it is because it cannot find the disks' capacity; this
+/// port can, so the bar is a gauge). A capacity below the amount shown is raised to it, so
+/// a network powered by the buffer alone still draws a full bar.
+fn menu_readout(energizer: &Energizer, found: &[Found]) -> Vec<i32> {
+    let holdings: Vec<Holding> = found.iter().map(|entry| entry.holding()).collect();
+    let energy = runtime::totals(&holdings)[Family::Energy.index()];
+    let stored = if energy.stored > 0 {
+        energy.stored
+    } else {
+        energizer.buffer()
+    };
+    let capacity = runtime::menu_capacity(energy.capacity).max(stored);
+    runtime::menu_slots(stored, capacity)
+}
+
 /// The Part of the mod's one block-entity type. It distinguishes the blocks by their id.
 struct NodePart;
 
@@ -488,7 +548,7 @@ impl BlockEntityPart for NodePart {
     }
 
     /// One server tick of the energizer: draw the network's usage, then say whether it was
-    /// covered.
+    /// covered, and leave the menu's readout in its data slots.
     fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
         if node_at(host, event.pos) != Some(Node::Energizer) {
             return;
@@ -524,10 +584,85 @@ impl BlockEntityPart for NodePart {
                 },
             );
         }
+        // The menu's readout, as the tick left it: the network's stored energy and the
+        // capacity it is measured against. Upstream's `getStored` falls back to the
+        // energizer's own buffer when the network holds nothing, and so does this; the
+        // capacity is the network's real one (upstream passes the stored amount, which is
+        // the defect this port fixes). Written only when it changed: a write marks the
+        // block entity changed, and a readout that did not move is not a change.
+        let readout = menu_readout(&energizer, &found);
+        if event.entity.data != readout {
+            event.entity.data = readout;
+        }
+    }
+
+    /// The energizer's menu: 176 wide and 189 high, the player's inventory at 8/107 and the
+    /// one declared container slot hidden, as upstream's `NetworkEnergizerContainerMenu`
+    /// holds no item slots at all (`addPlayerInventory(playerInventory, 8, 107)`).
+    fn screen(&self, _host: &dyn Host, event: &mut ScreenEvent<'_>) -> Option<Screen> {
+        if Node::from_block(event.block) != Some(Node::Energizer) {
+            return None;
+        }
+        Some(Screen {
+            width: 176.0,
+            height: 189.0,
+            // The menu type declares one slot (a menu type needs one); the screen does not
+            // place it, so the server's menu does not have it either.
+            slots: vec![None],
+            inventory_y: 107.0,
+            inventory_x: 8.0,
+            own_labels: false,
+            own_background: false,
+            ..Screen::default()
+        })
+    }
+
+    /// The bar, filled bottom-up from the menu's data slots: upstream's
+    /// `EnergyProgressWidget` (`progress * height`, drawn from the bottom).
+    fn screen_draw(&self, _host: &dyn ClientHost, event: &mut ScreenDrawEvent<'_>) {
+        if Node::from_block(event.block) != Some(Node::Energizer) {
+            return;
+        }
+        let (stored, capacity) = runtime::menu_amounts(event.data);
+        // `origin` is the screen's top-left in GUI pixels: the mod's own coordinates are
+        // from there (`screen_click`'s `at` is too), not from the window's.
+        let [ox, oy] = event.origin;
+        let [x, y] = [ox + BAR_AT[0], oy + BAR_AT[1]];
+        let [width, height] = BAR_SIZE;
+        // The frame: the bar's own empty trough, so a network with nothing in it still
+        // shows where the gauge is.
+        event.draw.fill([x, y, width, height], 0xFF1B1B1B);
+        let filled = (runtime::bar_fraction(stored, capacity) * f64::from(height)) as f32;
+        if filled > 0.0 {
+            // The fill is drawn from the bottom up, as upstream's sprite slice is.
+            event
+                .draw
+                .fill([x, y + height - filled, width, filled], ENERGY_COLOR);
+        }
+    }
+
+    /// The stored amount under the cursor over the bar, as upstream's
+    /// `NetworkEnergizerEnergyInfo.createTooltip` prints it (`∞` for a creative store).
+    fn screen_tooltip(&self, _host: &dyn ClientHost, event: &mut ScreenTooltipEvent<'_>) {
+        if Node::from_block(event.block) != Some(Node::Energizer) {
+            return;
+        }
+        let [x, y] = BAR_AT;
+        let [width, height] = BAR_SIZE;
+        let [at_x, at_y] = event.at;
+        if at_x < x || at_x >= x + width || at_y < y || at_y >= y + height {
+            return;
+        }
+        let (stored, _) = runtime::menu_amounts(event.data);
+        event
+            .lines
+            .push(format!("Available: {}", runtime::formatted(stored)));
     }
 }
 
 /// What the network's energy storage holds together (a creative storage is always full).
+/// How much of the network's energy the energizers may draw: every energy-family storage's
+/// amount, summed.
 fn energy_available(found: &[Found]) -> u64 {
     found
         .iter()
@@ -565,7 +700,8 @@ pub(crate) fn on_right_click_block(
         return Flow::Continue;
     };
     let pos = event.click.pos;
-    if block_id_at(host, pos).as_deref() != Some(DRIVE) {
+    let block = block_id_at(host, pos);
+    if block.as_deref() != Some(DRIVE) {
         return Flow::Continue;
     }
     let Some(held) = event.click.stack else {
@@ -623,7 +759,7 @@ fn tell(host: &mut dyn ServerHost, uuid: u128, line: &str) {
 
 // --- commands --------------------------------------------------------------
 
-/// `/refinedtypes info|insert` (`register_commands`).
+/// `/refinedtypes info|insert|menu` (`register_commands`).
 pub(crate) fn on_register_commands(event: &mut RegisterCommandsEvent<'_>) {
     event
         .commands
@@ -631,6 +767,9 @@ pub(crate) fn on_register_commands(event: &mut RegisterCommandsEvent<'_>) {
     event.commands.push(Command::new(
         "refinedtypes insert <pos:block_pos> <family:word> <amount:integer>",
     ));
+    event
+        .commands
+        .push(Command::new("refinedtypes menu <pos:block_pos>"));
 }
 
 /// The `/refinedtypes` commands' bodies (`run_mod_command`).
@@ -647,7 +786,7 @@ pub(crate) fn on_run_mod_command(
     let Some(CommandArgumentValue::BlockPos(pos)) = event.command.argument("pos") else {
         feedback(
             host,
-            "Usage: /refinedtypes <info|insert> <x> <y> <z> [family] [amount]",
+            "Usage: /refinedtypes <info|insert|menu> <x> <y> <z> [family] [amount]",
         );
         return Flow::Cancel;
     };
@@ -655,6 +794,10 @@ pub(crate) fn on_run_mod_command(
     match sub.as_str() {
         "info" => {
             info(host, pos);
+            Flow::Cancel
+        }
+        "menu" => {
+            menu(host, pos);
             Flow::Cancel
         }
         "insert" => {
@@ -758,6 +901,40 @@ fn info(host: &mut dyn ServerHost, pos: [i32; 3]) {
     );
 }
 
+/// `/refinedtypes menu <pos>`: the menu's data slots and the amount they hold. The pin has
+/// no control command for a menu's data slots (`ctl screen` reports the screen, its title and
+/// its slots), so the leg reads them through the same accessor the menu's sync reads them
+/// with (`block_entity_data_slots`, `ModBlockEntity.data`).
+fn menu(host: &mut dyn ServerHost, pos: [i32; 3]) {
+    if node_at(host, pos).is_none() {
+        feedback(host, "No Refined Storage network block there.");
+        return;
+    }
+    let Some(level) = host.level(host.dimension()) else {
+        feedback(host, "No level is loaded.");
+        return;
+    };
+    let Some(entity) = host.block_entity(level, pos) else {
+        return;
+    };
+    let slots = entity.data_slots(host).unwrap_or_default();
+    let (stored, capacity) = runtime::menu_amounts(&slots);
+    let listed: Vec<String> = slots.iter().map(i32::to_string).collect();
+    feedback(
+        host,
+        &format!(
+            "Menu at {},{},{}: {} data slots [{}]; stored {}/{}",
+            pos[0],
+            pos[1],
+            pos[2],
+            slots.len(),
+            listed.join(", "),
+            runtime::formatted(stored),
+            runtime::formatted(capacity),
+        ),
+    );
+}
+
 /// Deposit into the network's typed storage, in the order `holdings` returns: its storage
 /// blocks, then the disks in its drives.
 fn insert(host: &mut dyn ServerHost, pos: [i32; 3], family: Family, amount: u64) {
@@ -816,6 +993,20 @@ fn insert(host: &mut dyn ServerHost, pos: [i32; 3], family: Family, amount: u64)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_menu_the_content_declares_is_the_one_the_code_fills() {
+        // The menu type is a content file (the jar declares it in code, so `tools/carry.py`
+        // generates it) and the data slots are the code's: if the two ever disagree, the
+        // client gets a menu whose readout is cut short or padded with zeros.
+        let declared = include_str!("../data/refinedtypes/horizon/menu/energizer.json");
+        let compact: String = declared.chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(
+            compact,
+            format!("{{\"data_slots\":{},\"slots\":1}}", runtime::MENU_SLOTS),
+            "the declared menu type"
+        );
+    }
 
     #[test]
     fn a_block_amount_round_trips_through_its_payload() {

@@ -115,6 +115,13 @@ def block_declaration(name: str) -> bytes:
         # The jar's blockstate has `active=false|true` (NetworkEnergizerBlock).
         declaration["state_properties"] = {"active": {"type": "boolean"}}
         declaration["default_state"] = {"active": "false"}
+        # The one block of the jar that opens a menu (upstream `NetworkEnergizerBlock.useWithoutItem`
+        # -> `openMenu`). A content block opens its menu through its template's class, and a
+        # template that opens one is a workstation: `minecraft:smithing_table` is a menu-opening
+        # class with no state properties of its own, so the block's state stays the jar's
+        # `active` alone (`minecraft:barrel`, what the parent's container blocks use, would add
+        # `facing` and `open` and change the blockstate the jar ships).
+        declaration["template"] = "minecraft:smithing_table"
     return json_bytes(declaration, True)
 
 
@@ -129,6 +136,21 @@ def item_declaration(name: str) -> bytes:
         },
         True,
     )
+
+
+def menu_declaration() -> bytes:
+    """The energizer's menu type, the mod's only menu (`registry/Menus`).
+
+    Upstream's `NetworkEnergizerContainerMenu` holds no container slots of its own (only
+    the player's inventory; the energy readout travels in `NetworkEnergizerEnergyInfoPacket`).
+    A menu type at this pin declares at least one slot, so it declares one and the port's
+    `screen` hides it — which also keeps it out of the server's menu.
+
+    The eight data slots are the readout: the stored amount and the capacity it is measured
+    against, four 16-bit limbs each (a data slot is a `short` on the wire, so a `u64` cannot
+    ride in one).
+    """
+    return json_bytes({"slots": 1, "data_slots": 8}, True)
 
 
 def upgrade_loot(raw: bytes) -> bytes:
@@ -326,6 +348,8 @@ def expected(jar: zipfile.ZipFile) -> dict[str, bytes]:
         files[f"{DATA}horizon/block/{name}.json"] = block_declaration(name)
     for name in item_names():
         files[f"{DATA}horizon/item/{name}.json"] = item_declaration(name)
+    # The energizer's menu type: the mod's only menu (upstream declares it in code).
+    files[f"{DATA}horizon/menu/energizer.json"] = menu_declaration()
     # The recipe family, converted to the 26.3 dialect.
     recipes, _ = recipe_files(jar)
     files.update(recipes)

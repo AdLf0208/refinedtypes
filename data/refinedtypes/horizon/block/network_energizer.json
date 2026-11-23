@@ -16,5 +16,5 @@
       "type": "boolean"
     }
   },
-  "template": "minecraft:iron_block"
+  "template": "minecraft:smithing_table"
 }

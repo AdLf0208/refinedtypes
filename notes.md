@@ -86,7 +86,10 @@ this slice implements, on the parent port's network:
 | `block_drops` | `Hooks::block_drops` | a broken storage block's amount onto its own item (slice 3) |
 | `on_block_placed_by` | `ItemPart::on_block_placed_by` | the placed item's amount, clamped, into the block (slice 3) |
 | `right_click_block` | `Hooks::right_click_block` | a refinedtypes disk onto the parent's drive |
-| `register_commands` | `Hooks::register_commands` | `/refinedtypes info|insert` |
+| `screen` | `BlockEntityPart::screen` | the energizer's 176×189 menu layout (slice 4) |
+| `screen_draw` | `BlockEntityPart::screen_draw` | the energy bar, from the menu's data slots (slice 4) |
+| `screen_tooltip` | `BlockEntityPart::screen_tooltip` | the stored amount under the cursor over the bar (slice 4) |
+| `register_commands` | `Hooks::register_commands` | `/refinedtypes info|insert|menu` |
 | `run_mod_command` | `Hooks::run_mod_command` | their bodies |
 | `server_started` | `Hooks::server_started` | a world opened: drop the per-world cache |
 | `world_lifecycle` | `Hooks::world_lifecycle` | a failed/closed world drops it too |
@@ -110,10 +113,12 @@ this slice implements, on the parent port's network:
    the block's own item carries the amount as `minecraft:block_entity_data` and the placement Part
    clamps it back, upstream's `AbstractStorageContainerBlockItem` contract. The Network Energizer's
    buffer is not carried (the gap line names the storage block).
-4. **No storage-block or energizer menu/screen.** Upstream each opens a menu (the energizer shows
-   an energy bar via a `NetworkEnergizerData` packet). A mod menu at this pin needs a `Screen`
-   layout and a `ModContainer`, and the parent's notes record that a mod menu's slots are invisible
-   without one. The readout is the command; the screens are a gap.
+4. ~~**No storage-block or energizer menu/screen.**~~ **Done in 0.1.4** (`## Slice 4`): the
+   energizer's menu and screen, which is the mod's only menu (the jar has one
+   `NetworkEnergizerContainerMenu`; the storage blocks have none upstream either, so this line's
+   earlier "upstream each opens a menu" was wrong and is corrected in the slice's record). A mod
+   menu at this pin needs a `Screen` layout and a `ModContainer` — and, as the slice measured,
+   a block template whose class opens a menu.
 5. **No config file.** The usage ladder and the capacities are constants read from the upstream
    defaults; a Horizon mod's config dir exists (API 26) but a config UI is out of this tier.
 6. **Creative/infinite** are modelled as the upstream classes do (creative: always full, extract
@@ -135,7 +140,8 @@ this slice implements, on the parent port's network:
    the source chain's root `64b_source_storage_part` (needs `ars_nouveau:magebloom_fiber`; Ars
    Nouveau is not ported, so the source branch is reachable only with a creative-given part).
 3. ~~The block item does not carry the block's amount (deviation 3).~~ **Done in 0.1.3**.
-4. Menus and screens (deviation 4).
+4. ~~Menus and screens (deviation 4).~~ **Done in 0.1.4** (`## Slice 4`): the energizer's menu
+   and screen; the storage blocks have no menu upstream either.
 5. The energizer does not refill its buffer from the network once drained (upstream does not
    either: the buffer is a load-time kick-start), and the network is not shut down when unpowered
    (the parent has no such state) — the storage stays readable, `active` says whether the usage
@@ -572,3 +578,200 @@ drain assertion (`e2e-selftest.log`, `EXIT:1`).
    plain item, unchanged.
 4. **A doctored payload is clamped at placement, not refused** — vanilla's own posture for
    `block_entity_data`; the block reads the tier's capacity.
+
+## Slice 4 — the Network Energizer's menu and screen (2026-11-23) — version 0.1.4
+
+Gap line this slice answers — §Gaps item 4 / deviation 4: *"No storage-block or energizer
+menu/screen. Upstream each opens a menu (the energizer shows an energy bar via a
+`NetworkEnergizerData` packet)."* Class `content`, tier **machines**, unchanged: menus and screens
+are the tier's own shape (`horizon/docs/modpacks.md`, "Tiers"), and no renderer, entity, dimension
+or third-party mod is added.
+
+### The artefact corrected the brief: the mod has one menu, and it is the energizer's
+
+The brief for this slice named the *storage block's* menu. The 0.3.2 jar has exactly **one** menu,
+one screen and one data packet — `networkenergizer/NetworkEnergizerContainerMenu`,
+`NetworkEnergizerScreen`, `EnergyProgressWidget`, `NetworkEnergizerEnergyInfo` and
+`packet/s2c/NetworkEnergizerEnergyInfoPacket`, registered by `registry/Menus` — and no
+`MenuProvider` under `storage/` (the class listing has no `*ContainerMenu` there, and the storage
+blocks are `EnergyStorageBlockBlockItem`/`...Provider` only). So a storage-block menu would be
+invented content, which `AGENTS.md` forbids; this slice ports the mod's only menu. The gap line's
+"upstream each opens a menu" was this port's own error and is corrected here.
+
+### The `u64` in `i32` question, settled before the code
+
+Measured first, then designed:
+
+- a mod menu's data slots are `ModBlockEntity.data: Vec<i32>` (`horizon-mod-vocab/src/item/containers.rs`),
+  as many as the menu type declares (`data_slots`, `data/<id>/horizon/menu/<name>.json`);
+- the menu's sync sends them as `i16` — `lan/containers.rs::sync_container_data` maps `v as i16`,
+  and the `screen_draw` doc says "16-bit on the wire … a bigger value wraps";
+- the energizer's readout is the network's stored energy and capacity: `u64`, up to 8,388,608,000
+  on the 8388608k tier (33 bits) and `i64::MAX` on a creative store.
+
+**Decision: split the amount across slots in base 2¹⁶, four limbs per value** — stored then
+capacity, 8 data slots. *Capped* would show 34,464 for a 1024k block holding 100,000; *two slots*
+cover only 32 bits, short of the biggest tier; *reading the block entity's own NBT on the client*
+needs a `block_entity_update_tag` sync on every change, which the pin's own guidance rejects for a
+menu's progress ("menus have their own data slots"). The limbs are exact for every `u64`, each fits
+the 16 bits the wire carries, and the screen reassembles them — so the menu carries the amount, and
+the leg reads it out of the same storage the sync reads (`block_entity_data_slots`).
+
+### Two platform facts this slice measured (neither was in the pin's docs)
+
+1. **A mod container's menu opens only when its block's *template* opens one.** The engine's use
+   path opens a container for a block whose class emits `PlayerEffect::OpenMenu`; our blocks are
+   templated on `minecraft:iron_block`, which does not. With the container and menu type declared
+   and nothing else, `ctl interact` on the energizer left `screen: playing` (red leg,
+   `e2e-red-menu.log`). `PlayerRef::open_menu` *does* open the menu — but then the client has no
+   block position for it ("`screen_pos` is the block as the server named it when the block opened
+   its menu type"), so no mod screen is built, no `screen_draw`, and the data slots never reach a
+   screen: measured, the menu opened with the right title and 36 slots and drew nothing
+   (`mod_screen` stayed `None`). The working route is a template whose class opens a menu:
+   `minecraft:smithing_table` opens one and has **no state properties of its own**, so the block's
+   state stays the jar's `active` alone. (`minecraft:barrel`, what the parent's four container
+   blocks use, would have added `facing`/`open` and changed the blockstate the jar ships.)
+2. **`screen_draw`'s coordinates are screen-relative.** `event.origin` is the screen's top-left;
+   the mod draws from there. Drawing at the upstream numbers without adding the origin put the bar
+   outside the panel — the screenshot caught it (a 192-pixel green sliver at the window's
+   `(80, y)`, the un-offset rectangle) before the e2e's bar measurement did.
+
+### The readout and the screen
+
+- `data/refinedtypes/horizon/menu/energizer.json` — `{"slots": 1, "data_slots": 8}`. Upstream's
+  menu holds no container slots (the player's inventory only), and a menu type at this pin declares
+  at least one, so the type declares one and the port's `screen` leaves it out (`Screen::slots:
+  [None]`), which keeps it out of the server's menu too (`native_hidden_slots`) — the leg asserts
+  36 slots and no `300+`.
+- `Registrar::block_container(network_energizer, ModContainer { slots: 1, no faces, no inputs,
+  menu: "refinedtypes:energizer" })`.
+- `BlockEntityPart::screen` — 176 × 189, the inventory's first row at y = 107 and its left column at
+  8, upstream's own numbers (`NetworkEnergizerScreen`: `imageWidth 176`, `imageHeight 189`,
+  `addPlayerInventory(playerInventory, 8, 107)`).
+- `BlockEntityPart::screen_draw` — the 16 × 70 bar at (80, 20) from the screen's top left, a
+  `#1B1B1B` trough and a `#5AD35A` fill grown from the bottom, `progress * height` as upstream's
+  `EnergyProgressWidget` slices its sprite. The jar's own `textures/gui/sprites/widget/energy_progress_bar.png`
+  is carried, but the sprite route is not used: the pin's `sprite` names atlas entries and the
+  carried sprite's key is not worth guessing when two `fill`s draw the same gauge and a screenshot
+  can measure it.
+- `BlockEntityPart::screen_tooltip` — `Available: 5,000` (upstream's
+  `NetworkEnergizerEnergyInfo.createTooltip`, `∞` for a creative store) when the cursor is over the
+  bar. The text is a literal: the key upstream uses (`gui.autocrafting_preview.available`) belongs
+  to the parent mod, not to this one.
+- The energizer's tick writes `event.entity.data = menu_slots(stored, capacity)`, only when it
+  changed (a write marks the block entity changed).
+- `/refinedtypes menu <pos>` — the readout the leg asserts: the eight data slots and the amount they
+  hold. The pin has no `ctl` command for a menu's data slots (`ctl screen` reports the screen, its
+  title and its slots), so the command reads them through the same accessor the menu's sync uses.
+
+### Upstream defect fixed: the bar is a gauge, not a full bar
+
+`NetworkEnergizerBlockEntity.getCapacity()` returns `getStored()` — its own comment says *"it's
+currently not possible to find out the capacity of all energy disks in the network, that's why we
+just pass stored as the capacity instead"*. The bar is therefore `stored / stored` = always full,
+and `NetworkEnergizerData` carries the same value twice. This port's network walk already computes
+the family's real capacity (`/refinedtypes info` prints `energy 5000/256000`), so the menu's second
+quantity is that capacity, and the bar shows 5,000 of 256,000 as 1.3 of 70 pixels — measured in the
+screenshot. What a user notices: the gauge moves, and a nearly empty network looks nearly empty.
+The buffer fallback upstream has (`stored <= 0` reads the node's own 1,000 FE buffer) is kept, and
+the capacity never drops below the amount shown, so a network powered by the buffer alone draws a
+full bar (1,000/1,000, also measured).
+
+### Red → green
+
+Red, verbatim from `e2e-red-menu.log` (the 0.1.4 tree with the container declaration and the menu
+type removed — 0.1.3's state — built by the launcher and driven by the new leg):
+
+```
+  screen: {"screen":"playing","container":null,"title":"","slots":0}
+FAIL: using the energizer did not open a menu: {"screen":"playing","container":null}
+EXIT:1
+```
+
+The runtime came first too (`red-slice4-menu.log`): `error[E0425]: cannot find function
+bar_fraction`/`formatted`/`menu_slots`/`menu_amounts`/`menu_capacity`/`limbs`/`unlimbs`, 21 errors,
+`CARGO_EXIT:101`.
+
+Green, from `e2e.log` (the delivered pair):
+
+```
+  screen: {"screen":"container","container":[-2147483648,0,0],"title":"Network Energizer","slots":36}
+  menu: Menu at 39,64,2: 8 data slots [4848, 0, 0, 0, 59392, 3, 0, 0]; stored 4,848/256,000
+  readout: stored=4848 capacity=256000 limbs=(4848 0 0 0 | 59392 3 0 0)
+  info just after the readout: 4808
+  bar at 4848/256000: 1.3 of 70 GUI px filled, 68.7 dark (the trough)
+  menu (buffer only): Menu at 49,64,2: 8 data slots [1000, 0, 0, 0, 1000, 0, 0, 0]; stored 1,000/1,000
+  bar at 1000/1000: 70.1 of 70 GUI px filled (the 5000/256000 one was 1.3)
+PASS: …
+EXIT:0
+```
+
+`256,000` is `0x3E800`: the low limb is 59,392 and the next 3 — a single 16-bit slot could not have
+carried it, which is the split's point. The readout trails the deposit because the network pays its
+4 FE/t while the menu is open, so the leg compares it with `/refinedtypes info` (a different reading
+of the same amount) to within 100 FE rather than pinning 5,000 exactly.
+
+`MENU_NEGATIVE=1` inverts the readout assertion and must fail; it does —
+`FAIL: MENU_NEGATIVE: the menu reads 4924 for a 5000 network, so the assertion is alive`
+(`e2e-menu-negative.log`, `EXIT:1`).
+
+### Ladder (0.1.4)
+
+| Step | Command | Result |
+|---|---|---|
+| runtime tests, red first | `cargo test --offline` before the model existed | **21 errors** (`E0425` ×7 functions), `CARGO_EXIT:101` (`evidence/refinedtypes/red-slice4-menu.log`) |
+| runtime + glue tests | `cargo test --offline` | **29 passed**, 0 failed (`evidence/refinedtypes/sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** (`sdk-clippy.log`) |
+| format | `rustfmt --edition 2024 --check src/{lib,support,runtime}.rs` | clean |
+| SDK check | `cargo horizon-mod check` | *"Refined Types uses 405 items of the API (5 Part kinds, …, 15 hooks, …). Made for 0a875da."* (`sdk-check.log`) |
+| package | `rm -f Cargo.lock` before each of two `cargo horizon-mod build` runs | **295,355 B**, SHA-256 `1c2b80ea37a1e52b7681f34e6dc5e180b738e66ef42e077d4cc867f52bd189df`, **582 entries**, `cmp` byte-identical, no packed `Cargo.lock` |
+| package check | `cargo horizon-mod check refinedtypes.hmod` | `0.1.4 (native-mod, format native-1/0a875da…/e59da90…) 295355 bytes` (`sdk-package-check.log`) |
+| fits (pin) | `… fits refinedtypes.hmod --build 0a875da` | *"0a875da  made for"* (`sdk-fits.log`) |
+| fits (other build) | `… fits refinedtypes.hmod --build 0b14f8a` | *"0b14f8a  fits"* (`sdk-fits-other.log`) — the one that proves something |
+| content carry | `python3 tools/carry.py --check` | 576 files re-derived (575 + the menu declaration), 107 recipes, 2 skipped with the reason |
+| recipe types | `python3 ports/tools/check-recipe-types.py refinedtypes` | `refinedtypes: ok` |
+| launcher build | `tools/build-game.sh` | exit 0, `Compiling refinedstorage (1 of 2)` / `Compiling refinedtypes (2 of 2)`, `native-0a875da-7d560bff795f` |
+| in-game leg | `build-slot.sh run --step e2e -- … tools/e2e.sh` | **PASS** + **`EXIT:0`** (`refinedtypes-e2e/e2e.log`) |
+| red (no container declaration) | the same leg against a build of the 0.1.3 state | **FAIL** + **`EXIT:1`** — *"using the energizer did not open a menu: {"screen":"playing"}*" (`e2e-red-menu.log`) |
+| control (same Nightly, no packages) | `GAME=$CONTROL_GAME tools/e2e.sh` | **FAIL** + `EXIT:1` — *"the block at 44,64,0 is minecraft:air"* (`e2e-control.log`) |
+| negative (inverted restore) | `NEGATIVE=1 tools/e2e.sh` | **FAIL** + `EXIT:1` — *"the replaced block reads 5000/256000"* (`e2e-negative.log`) |
+| menu negative (inverted readout) | `MENU_ONLY=1 MENU_NEGATIVE=1 tools/e2e.sh` | **FAIL** + `EXIT:1` — *"the menu reads 4924 for a 5000 network"* (`e2e-menu-negative.log`) |
+| selftest (flipped drain) | `SELFTEST=1 tools/e2e.sh` | **FAIL** + `EXIT:1` — *"the disk was drained to 3004"* (`e2e-selftest.log`) |
+| menu leg alone | `MENU_ONLY=1 tools/e2e.sh` | **PASS** + `EXIT:0` (`e2e-menu-only.log`) |
+| log gate | `check-e2e-logs.py refinedtypes-e2e --strict` | `logs=7 ok=7 missing-exit=0 bad-exit=0` |
+| package gate | `verify-sdk-package.py refinedtypes` | **1/1** |
+
+### Coverage (parity rule) — the families this slice touches
+
+| family | state |
+|---|---|
+| the energizer's menu (its only menu) | **tested** — `ctl interact` opens it; `ctl screen` reports `container`, the title `Network Energizer` and the player's 36 slots with no container slot; `ctl close` returns to `playing` (`e2e.log`, `e2e-red-menu.log` for the red) |
+| the menu's data slots (stored + capacity) | **tested** — 8 slots, the stored amount in the low limb and the capacity split as `[59392, 3, 0, 0]` for 256,000; cross-checked against `/refinedtypes info`; inverted under `MENU_NEGATIVE=1` |
+| the bar | **tested** — measured from a screenshot (`tools/bar_check.py`): 1.3 of 70 GUI px filled for 4,848/256,000 and 70.1 for 1,000/1,000 (differential), with the 68.7-pixel trough proving the bar is drawn |
+| the tooltip | **drawn, not machine-measured** — `screen_tooltip` returns `Available: <amount>` over the bar; the pin's `ctl` has no hover-a-tooltip command, and the amount it formats is the data slot asserted above (`formatted` is unit-tested) |
+| storage-block menus | **not ported** — the jar has none (one `*ContainerMenu` class, the energizer's): a storage-block menu would be invented content |
+| the redstone-mode side button | **not ported** — upstream's `RedstoneModeSideButtonWidget` needs the parent's redstone-mode property, which the parent port does not model (its own gap) |
+
+### Deviations and traps (this slice)
+
+1. **The template is `minecraft:smithing_table`, not the jar's plain block.** For a menu, a content
+   block's template must be a class that opens one; a workstation is the cheapest such class and
+   this one has no state properties, so the block's state stays the jar's `active` alone. Recorded
+   because a template is a mechanism choice the jar does not make.
+2. **One declared container slot, hidden by the screen.** A menu type at this pin declares 1 to 256
+   slots; upstream's menu has none. The screen leaves the one out, and the server's menu drops it
+   too, so a player sees the player inventory only.
+3. **The capacity shown is the real one** (upstream's always-full bar is the defect above), and the
+   buffer fallback stands in for a network that holds nothing.
+4. **The tooltip text is a literal**, because its translation key belongs to the parent mod.
+5. **A screenshot assertion needs both counts.** The first measurement counted only bright pixels
+   and "passed" on the plain 198-grey panel; the trough count is what distinguishes a drawn bar from
+   a light panel behind it. The first drawing attempt was also outside the panel (the origin bug
+   above) and only the screenshot showed it.
+6. **`| tail` in a leg's pipeline blinds the e2e guard.** The guard watches the leg's own output for
+   900 s of silence; `tools/e2e.sh | tee LOG | tail -N` buffers everything until EOF, so a healthy
+   8-minute run was killed twice as a "hang". The leg now runs `… | tee LOG` with nothing after it.
+   `tools/recipe_check.py`'s ctl calls gained a 180 s timeout for the same reason: a call the game
+   never answers now names itself instead of idling the leg out.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices

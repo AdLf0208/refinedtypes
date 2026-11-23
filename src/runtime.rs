@@ -331,6 +331,105 @@ pub fn restored(capacity: Capacity, asked: u64) -> u64 {
     Store::with_stored(capacity, asked).stored()
 }
 
+/// The number of 16-bit limbs one menu amount takes (a `u64` is 64 bits).
+pub const MENU_LIMBS: usize = 4;
+
+/// The data slots the energizer's menu carries: the stored amount's limbs, then the
+/// capacity's.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the menu declaration test is its reader; the glue builds its slots from menu_slots"
+    )
+)]
+pub const MENU_SLOTS: usize = MENU_LIMBS * 2;
+
+/// A menu amount's limbs: the low 16 bits first, four of them, each one an `i32` a
+/// menu's data slot holds.
+///
+/// A data slot is 16-bit on the wire (`ContainerSetData` is a `short`, as vanilla's own
+/// data slots are), so a whole amount cannot ride in one slot: the largest finite tier
+/// is 8,388,608,000 (33 bits) and a creative store is `i64::MAX`. The limbs make every
+/// `u64` exact on both sides of the wire.
+pub fn limbs(value: u64) -> [i32; MENU_LIMBS] {
+    let mut out = [0i32; MENU_LIMBS];
+    for (index, limb) in out.iter_mut().enumerate() {
+        *limb = ((value >> (index * 16)) & 0xFFFF) as i32;
+    }
+    out
+}
+
+/// The amount a menu's limbs hold back, from one `MENU_LIMBS`-long run of data slots.
+pub fn unlimbs(slots: &[i32]) -> u64 {
+    let mut value = 0u64;
+    for (index, limb) in slots.iter().take(MENU_LIMBS).enumerate() {
+        // A slot a client reads is 16-bit and signed; keep the bits it carries.
+        let bits = (*limb as u32) & 0xFFFF;
+        value |= u64::from(bits) << (index * 16);
+    }
+    value
+}
+
+/// The energizer menu's data slots: the network's stored energy, then the capacity it
+/// is measured against (`0` when there is nothing to measure).
+pub fn menu_slots(stored: u64, capacity: u64) -> Vec<i32> {
+    let mut slots = limbs(stored).to_vec();
+    slots.extend(limbs(capacity));
+    slots
+}
+
+/// The (stored, capacity) pair a menu's data slots hold.
+pub fn menu_amounts(slots: &[i32]) -> (u64, u64) {
+    let capacity = if slots.len() < MENU_LIMBS {
+        0
+    } else {
+        unlimbs(&slots[MENU_LIMBS..])
+    };
+    (unlimbs(slots), capacity)
+}
+
+/// The amount the menu's bar is measured against. A tier with no ceiling (infinite) and a
+/// creative store have no number to divide by; upstream passes the stored amount as the
+/// capacity for exactly that case, so both answer the creative sentinel — which makes the
+/// bar full, as upstream's is.
+pub fn menu_capacity(capacity: Capacity) -> u64 {
+    match capacity {
+        Capacity::Bounded(limit) => limit,
+        Capacity::Infinite | Capacity::Creative => CREATIVE_STORED,
+    }
+}
+
+/// How much of the bar is filled: 0 with nothing to measure against, 1 for an unbounded
+/// store (which is always full), else stored/capacity clamped to 1.
+pub fn bar_fraction(stored: u64, capacity: u64) -> f64 {
+    if capacity == 0 {
+        return 0.0;
+    }
+    if capacity == CREATIVE_STORED {
+        return 1.0;
+    }
+    (stored as f64 / capacity as f64).clamp(0.0, 1.0)
+}
+
+/// The amount as the mod's screens print it: thousands grouped, and `∞` for a store a
+/// creative tier keeps full (`NetworkEnergizerEnergyInfo.createTooltip`'s
+/// `stored == Long.MAX_VALUE ? "∞" : format(stored)`).
+pub fn formatted(value: u64) -> String {
+    if value == CREATIVE_STORED {
+        return "∞".to_owned();
+    }
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
 /// A block that is on a Refined Storage network, or the add-on's own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Node {
@@ -952,6 +1051,77 @@ mod tests {
         assert_eq!(carried(infinite.capacity(), 0), None);
         // A creative store is always full, so its item names that, never 0.
         assert_eq!(carried(Capacity::Creative, 0), Some(CREATIVE_STORED));
+    }
+
+    #[test]
+    fn a_menu_amount_survives_its_data_slots_at_every_tier() {
+        // The energizer's readout is the network's stored energy and the capacity it is
+        // measured against; a data slot is 16-bit on the wire, so the amount rides in
+        // 16-bit limbs. Every tier's ceiling, the 8,388,608,000 the biggest one reaches,
+        // and the creative sentinel must all come back exactly.
+        let mut values = vec![0u64, 5_000, 65_535, 65_536, 256_000, 2_147_483_648];
+        for family in Family::ALL {
+            for tier in 0..Variant::TIERS {
+                if let Some(variant) = Variant::new(family, tier)
+                    && let Capacity::Bounded(limit) = variant.capacity()
+                {
+                    values.push(limit);
+                    values.push(limit - 1);
+                }
+            }
+        }
+        values.push(CREATIVE_STORED);
+        for stored in values {
+            for capacity in [Capacity::Bounded(256_000), Capacity::Infinite] {
+                let held = menu_capacity(capacity);
+                let slots = menu_slots(stored, held);
+                assert_eq!(slots.len(), MENU_SLOTS, "a menu declares its data slots");
+                assert!(
+                    slots
+                        .iter()
+                        .all(|slot| (0..=u16::MAX as i32).contains(slot)),
+                    "every limb of {stored} fits the 16 bits a data slot carries: {slots:?}"
+                );
+                assert_eq!(
+                    menu_amounts(&slots),
+                    (stored, held),
+                    "the slots give {stored} back"
+                );
+            }
+        }
+        // A short or absent list reads as nothing rather than panicking: the client has no
+        // data slots until the server's first values arrive.
+        assert_eq!(menu_amounts(&[]), (0, 0));
+        assert_eq!(menu_amounts(&[5_000]), (5_000, 0));
+    }
+
+    #[test]
+    fn the_energizer_bar_is_empty_half_and_full() {
+        assert_eq!(bar_fraction(0, 256_000), 0.0);
+        assert_eq!(bar_fraction(128_000, 256_000), 0.5);
+        assert_eq!(bar_fraction(256_000, 256_000), 1.0);
+        // Nothing on the network: nothing to divide by, and no bar.
+        assert_eq!(bar_fraction(0, 0), 0.0);
+        // A tier without a ceiling and a creative store are always full, as upstream's
+        // stored-as-capacity bar always is.
+        assert_eq!(bar_fraction(7, menu_capacity(Capacity::Infinite)), 1.0);
+        assert_eq!(
+            bar_fraction(CREATIVE_STORED, menu_capacity(Capacity::Creative)),
+            1.0
+        );
+        // A stored amount above a shrunken capacity never overfills the bar.
+        assert_eq!(bar_fraction(300_000, 256_000), 1.0);
+    }
+
+    #[test]
+    fn the_energizer_tooltip_groups_digits_and_names_a_creative_store() {
+        assert_eq!(formatted(0), "0");
+        assert_eq!(formatted(5_000), "5,000");
+        assert_eq!(formatted(64_000), "64,000");
+        assert_eq!(formatted(256_000), "256,000");
+        assert_eq!(formatted(8_388_608_000), "8,388,608,000");
+        // The creative sentinel is upstream's `∞`.
+        assert_eq!(formatted(CREATIVE_STORED), "∞");
     }
 
     #[test]
